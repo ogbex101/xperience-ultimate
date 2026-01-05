@@ -435,10 +435,32 @@ const tournamentsAPI = {
   },
   
   getUserProfile: async () => {
-    console.log('👤 TournamentsAPI: Fetching user profile');
-    return await api.get('/users/profile');
+    try {
+      const response = await api.get('/users/profile-with-xp'); // Changed from /users/profile
+      return response.data;
+    } catch (error) {
+      console.error('Get user profile error:', error);
+      return {
+        success: false,
+        data: { xp_points: 0 }
+      };
+    }
   },
-  
+  getUserXP: async () => {
+    try {
+      const response = await api.get('/users/profile-with-xp');
+      if (response.data.success) {
+        return {
+          success: true,
+          xp_points: response.data.data?.user?.xp_points || 0
+        };
+      }
+      return { success: false, xp_points: 0 };
+    } catch (error) {
+      console.error('Get user XP error:', error);
+      return { success: false, xp_points: 0 };
+    }
+  },
   getUserTournaments: async () => {
     console.log('📋 TournamentsAPI: Fetching user tournaments');
     return await api.get('/tournaments/my-tournaments');

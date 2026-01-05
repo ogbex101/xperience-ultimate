@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const jwt = require('jsonwebtoken'); // ADD THIS IMPORT
 
-// Simple auth middleware
+// Fixed auth middleware
 const authenticate = (req, res, next) => {
   const authHeader = req.header('Authorization');
   
@@ -21,14 +21,88 @@ const authenticate = (req, res, next) => {
     console.log('🔑 Verifying token:', token.substring(0, 20) + '...');
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     console.log('✅ Token decoded:', decoded);
-    req.user = decoded;
+    
+    // ✅ CRITICAL FIX: Handle both 'userId' and 'id' from JWT
+    req.user = {
+      id: decoded.userId || decoded.id,  // Get userId from token
+      userId: decoded.userId || decoded.id, // Also store as userId
+      username: decoded.username,
+      email: decoded.email,
+      is_admin: decoded.is_admin
+    };
+    
+    console.log('✅ User object set:', req.user);
     next();
   } catch (error) {
     console.error('❌ Token verification error:', error.message);
     res.status(401).json({ success: false, error: 'Invalid token' });
   }
 };
-// SPECIFIC ROUTES FIRST
+
+// ============================
+// SPECIFIC ROUTES FIRST (CRITICAL!)
+// ============================
+
+// GET /api/tournaments/user-groups - Get groups user is admin of
+router.get('/user-groups', authenticate, async (req, res) => {
+  try {
+    // ✅ Get user ID from multiple possible locations
+    const userId = req.user?.id || req.user?.userId;
+    
+    console.log('🔍 Fetching user groups:', {
+      reqUser: req.user,
+      userId,
+      userIdType: typeof userId
+    });
+    
+    if (!userId || userId === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID is undefined',
+        debug: { userObject: req.user }
+      });
+    }
+    
+    const [groups] = await db.execute(`
+      SELECT g.*, 
+             COUNT(gm.user_id) as member_count,
+             GROUP_CONCAT(gm.user_id) as member_ids
+      FROM groups g
+      JOIN group_members gm ON g.id = gm.group_id
+      WHERE gm.user_id = ? AND gm.role = 'admin' AND gm.status = 'joined'
+      GROUP BY g.id
+      HAVING member_count BETWEEN 1 AND 5
+    `, [userId]);
+
+    console.log('✅ Found groups:', groups.length);
+    
+    res.json({
+      success: true,
+      groups: groups.map(group => ({
+        id: group.id,
+        name: group.name,
+        game_specialty: group.game_specialty,
+        description: group.description,
+        member_count: group.member_count,
+        member_ids: group.member_ids ? group.member_ids.split(',').map(Number) : []
+      }))
+    });
+  } catch (error) {
+    console.error('❌ Get user groups error:', error);
+    console.error('❌ Error stack:', error.stack);
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch user groups: ' + error.message,
+      debug: {
+        sqlMessage: error.sqlMessage,
+        code: error.code,
+        errno: error.errno
+      }
+    });
+  }
+});
+
 // GET /api/tournaments/my-tournaments - Get user's tournaments
 router.get('/my-tournaments', authenticate, async (req, res) => {
   try {
@@ -56,36 +130,153 @@ router.get('/my-tournaments', authenticate, async (req, res) => {
     });
   }
 });
-// Add this route BEFORE your /:id route for debugging
-router.get('/debug/:id', async (req, res) => {
+
+// ============================
+// ROUTES WITH PARAMS (SPECIFIC TO GENERIC ORDER)
+// ============================
+
+// GET /api/tournaments/:id/squads - Get registered squads
+router.get('/:id/squads', async (req, res) => {
   try {
     const tournamentId = req.params.id;
-    console.log('🧪 Debug fetching tournament:', tournamentId);
-    
-    // Test 1: Simple query
-    const [simpleTest] = await db.execute(
-      'SELECT id, name FROM tournaments WHERE id = ?',
-      [tournamentId]
-    );
-    console.log('🧪 Simple test result:', simpleTest);
-    
-    // Test 2: Check participants
-    const [participantsTest] = await db.execute(
-      'SELECT * FROM tournament_participants WHERE tournament_id = ?',
-      [tournamentId]
-    );
-    console.log('🧪 Participants test:', participantsTest);
-    
+
+    const [squads] = await db.execute(`
+      SELECT 
+        tp.group_id,
+        g.name as group_name,
+        COUNT(DISTINCT tp.user_id) as squad_size,
+        GROUP_CONCAT(DISTINCT u.username ORDER BY u.username) as members,
+        MAX(tp.created_at) as registered_at
+      FROM tournament_participants tp
+      JOIN groups g ON tp.group_id = g.id
+      JOIN users u ON tp.user_id = u.id
+      WHERE tp.tournament_id = ? AND tp.group_id IS NOT NULL
+      GROUP BY tp.group_id, g.name
+      ORDER BY registered_at ASC
+    `, [tournamentId]);
+
     res.json({
       success: true,
-      simple: simpleTest,
-      participants: participantsTest
+      squads: squads || [],
+      tournament_id: tournamentId
     });
   } catch (error) {
-    console.error('🧪 Debug error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Get squads error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch squads'
+    });
   }
 });
+
+// POST /api/tournaments/:id/validate-group - Validate group for tournament
+router.post('/:id/validate-group', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+    const { group_id } = req.body;
+
+    // Get tournament
+    const [tournaments] = await db.execute(
+      `SELECT type, max_squads FROM tournaments WHERE id = ?`,
+      [tournamentId]
+    );
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        eligible: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check if user is group admin
+    const [isGroupAdmin] = await db.execute(`
+      SELECT 1 FROM group_members 
+      WHERE group_id = ? AND user_id = ? AND role = 'admin' AND status = 'joined'
+    `, [group_id, userId]);
+
+    if (isGroupAdmin.length === 0) {
+      return res.json({
+        eligible: false,
+        message: 'You must be a group admin'
+      });
+    }
+
+    // Check group size
+    const [groupMembers] = await db.execute(`
+      SELECT COUNT(*) as member_count FROM group_members 
+      WHERE group_id = ? AND status = 'joined'
+    `, [group_id]);
+
+    if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
+      return res.json({
+        eligible: false,
+        message: 'Group must have 1-5 members'
+      });
+    }
+
+    // Check if group already registered
+    const [groupInTournament] = await db.execute(`
+      SELECT 1 FROM tournament_participants 
+      WHERE tournament_id = ? AND group_id = ?
+      LIMIT 1
+    `, [tournamentId, group_id]);
+
+    if (groupInTournament.length > 0) {
+      return res.json({
+        eligible: false,
+        message: 'Group already registered'
+      });
+    }
+
+    // Check for member conflicts
+    const [conflicts] = await db.execute(`
+      SELECT DISTINCT u.id, u.username, tp.group_id as existing_group_id, g.name as existing_group_name
+      FROM group_members gm
+      JOIN users u ON gm.user_id = u.id
+      JOIN tournament_participants tp ON gm.user_id = tp.user_id
+      JOIN groups g ON tp.group_id = g.id
+      WHERE gm.group_id = ? 
+        AND tp.tournament_id = ?
+        AND tp.status = 'joined'
+        AND tp.group_id != ?
+    `, [group_id, tournamentId, group_id]);
+
+    // Check max squads
+    const [currentSquads] = await db.execute(`
+      SELECT COUNT(DISTINCT group_id) as squad_count 
+      FROM tournament_participants 
+      WHERE tournament_id = ? AND group_id IS NOT NULL
+    `, [tournamentId]);
+
+    const canRegisterMoreSquads = currentSquads[0].squad_count < tournament.max_squads;
+
+    return res.json({
+      eligible: conflicts.length === 0 && canRegisterMoreSquads,
+      conflicts: conflicts.map(c => ({
+        user_id: c.id,
+        username: c.username,
+        existing_group: c.existing_group_name
+      })),
+      group_already_registered: groupInTournament.length > 0,
+      member_count: groupMembers[0].member_count,
+      valid_member_count: groupMembers[0].member_count >= 1 && groupMembers[0].member_count <= 5,
+      max_squads_reached: !canRegisterMoreSquads,
+      current_squads: currentSquads[0].squad_count,
+      max_squads_allowed: tournament.max_squads
+    });
+
+  } catch (error) {
+    console.error('❌ Validate group error:', error);
+    res.status(500).json({
+      eligible: false,
+      error: 'Validation failed: ' + error.message
+    });
+  }
+});
+
 // GET /api/tournaments/:id/match/:matchId - Get specific match details
 router.get('/:id/match/:matchId', authenticate, async (req, res) => {
   try {
@@ -506,7 +697,7 @@ router.get('/:id', async (req, res) => {
     // Combine data - FIXED THE TYPO HERE
     const tournamentData = {
       ...tournaments[0],
-      participants_count: tournaments[0].participants_count || 0  // FIX: tournaments[0] not tournament[0]
+      participants_count: tournaments[0].participants_count || 0
     };
 
     res.json({
@@ -525,954 +716,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// GET /api/tournaments/user-groups - Get groups user is admin of
-router.get('/user-groups', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
-
-    const [groups] = await db.execute(`
-      SELECT g.*, 
-             COUNT(gm.user_id) as member_count,
-             GROUP_CONCAT(gm.user_id) as member_ids
-      FROM groups g
-      JOIN group_members gm ON g.id = gm.group_id
-      WHERE gm.user_id = ? AND gm.role = 'admin' AND gm.status = 'joined'
-      GROUP BY g.id
-      HAVING member_count BETWEEN 1 AND 5
-    `, [userId]);
-
-    res.json({
-      success: true,
-      groups: groups.map(group => ({
-        id: group.id,
-        name: group.name,
-        game_specialty: group.game_specialty,
-        description: group.description,
-        member_count: group.member_count,
-        member_ids: group.member_ids ? group.member_ids.split(',').map(Number) : []
-      }))
-    });
-  } catch (error) {
-    console.error('❌ Get user groups error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch user groups'
-    });
-  }
-});
-
-// GET /api/tournaments/:id/squads - Get registered squads
-router.get('/:id/squads', async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-
-    const [squads] = await db.execute(`
-      SELECT 
-        tp.group_id,
-        g.name as group_name,
-        COUNT(DISTINCT tp.user_id) as squad_size,
-        GROUP_CONCAT(DISTINCT u.username ORDER BY u.username) as members,
-        MAX(tp.created_at) as registered_at
-      FROM tournament_participants tp
-      JOIN groups g ON tp.group_id = g.id
-      JOIN users u ON tp.user_id = u.id
-      WHERE tp.tournament_id = ? AND tp.group_id IS NOT NULL
-      GROUP BY tp.group_id, g.name
-      ORDER BY registered_at ASC
-    `, [tournamentId]);
-
-    res.json({
-      success: true,
-      squads: squads || [],
-      tournament_id: tournamentId
-    });
-  } catch (error) {
-    console.error('❌ Get squads error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch squads'
-    });
-  }
-});
-
-// POST /api/tournaments/:id/validate-group - Validate group for tournament
-router.post('/:id/validate-group', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.id;
-    const { group_id } = req.body;
-
-    // Get tournament
-    const [tournaments] = await db.execute(
-      `SELECT type, max_squads FROM tournaments WHERE id = ?`,
-      [tournamentId]
-    );
-
-    if (tournaments.length === 0) {
-      return res.status(404).json({
-        eligible: false,
-        error: 'Tournament not found'
-      });
-    }
-
-    const tournament = tournaments[0];
-
-    // Check if user is group admin
-    const [isGroupAdmin] = await db.execute(`
-      SELECT 1 FROM group_members 
-      WHERE group_id = ? AND user_id = ? AND role = 'admin' AND status = 'joined'
-    `, [group_id, userId]);
-
-    if (isGroupAdmin.length === 0) {
-      return res.json({
-        eligible: false,
-        message: 'You must be a group admin'
-      });
-    }
-
-    // Check group size
-    const [groupMembers] = await db.execute(`
-      SELECT COUNT(*) as member_count FROM group_members 
-      WHERE group_id = ? AND status = 'joined'
-    `, [group_id]);
-
-    if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
-      return res.json({
-        eligible: false,
-        message: 'Group must have 1-5 members'
-      });
-    }
-
-    // Check if group already registered
-    const [groupInTournament] = await db.execute(`
-      SELECT 1 FROM tournament_participants 
-      WHERE tournament_id = ? AND group_id = ?
-      LIMIT 1
-    `, [tournamentId, group_id]);
-
-    if (groupInTournament.length > 0) {
-      return res.json({
-        eligible: false,
-        message: 'Group already registered'
-      });
-    }
-
-    // Check for member conflicts
-    const [conflicts] = await db.execute(`
-      SELECT DISTINCT u.id, u.username, tp.group_id as existing_group_id, g.name as existing_group_name
-      FROM group_members gm
-      JOIN users u ON gm.user_id = u.id
-      JOIN tournament_participants tp ON gm.user_id = tp.user_id
-      JOIN groups g ON tp.group_id = g.id
-      WHERE gm.group_id = ? 
-        AND tp.tournament_id = ?
-        AND tp.status = 'joined'
-        AND tp.group_id != ?
-    `, [group_id, tournamentId, group_id]);
-
-    // Check max squads
-    const [currentSquads] = await db.execute(`
-      SELECT COUNT(DISTINCT group_id) as squad_count 
-      FROM tournament_participants 
-      WHERE tournament_id = ? AND group_id IS NOT NULL
-    `, [tournamentId]);
-
-    const canRegisterMoreSquads = currentSquads[0].squad_count < tournament.max_squads;
-
-    return res.json({
-      eligible: conflicts.length === 0 && canRegisterMoreSquads,
-      conflicts: conflicts.map(c => ({
-        user_id: c.id,
-        username: c.username,
-        existing_group: c.existing_group_name
-      })),
-      group_already_registered: groupInTournament.length > 0,
-      member_count: groupMembers[0].member_count,
-      valid_member_count: groupMembers[0].member_count >= 1 && groupMembers[0].member_count <= 5,
-      max_squads_reached: !canRegisterMoreSquads,
-      current_squads: currentSquads[0].squad_count,
-      max_squads_allowed: tournament.max_squads
-    });
-
-  } catch (error) {
-    console.error('❌ Validate group error:', error);
-    res.status(500).json({
-      eligible: false,
-      error: 'Validation failed: ' + error.message
-    });
-  }
-});
-
-// POST /api/tournaments/:id/join - Join tournament (UPDATED)
-router.post('/:id/join', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.id;
-    const { group_id } = req.body; // For squad tournaments
-
-    console.log('👥 Join request:', { tournamentId, userId, group_id });
-
-    // Get tournament details
-    const [tournaments] = await db.execute(`
-      SELECT t.*, 
-             COUNT(tp.id) as participants_count
-      FROM tournaments t
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      WHERE t.id = ?
-      GROUP BY t.id
-    `, [tournamentId]);
-
-    if (tournaments.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Tournament not found'
-      });
-    }
-
-    const tournament = tournaments[0];
-
-    // Check tournament status
-    if (tournament.status !== 'upcoming') {
-      return res.status(400).json({
-        success: false,
-        error: 'Tournament is not accepting new participants'
-      });
-    }
-
-    // SQUAD TOURNAMENT VALIDATION
-    if (tournament.type === 'squad') {
-      if (!group_id) {
-        return res.status(400).json({
-          success: false,
-          error: 'Group ID required for squad tournaments'
-        });
-      }
-
-      // Check if user is admin of the group
-      const [isGroupAdmin] = await db.execute(`
-        SELECT 1 FROM group_members 
-        WHERE group_id = ? AND user_id = ? AND role = 'admin' AND status = 'joined'
-      `, [group_id, userId]);
-
-      if (isGroupAdmin.length === 0) {
-        return res.status(403).json({
-          success: false,
-          error: 'You must be a group admin to join squad tournaments'
-        });
-      }
-
-      // Check if group already in tournament
-      const [groupInTournament] = await db.execute(`
-        SELECT 1 FROM tournament_participants 
-        WHERE tournament_id = ? AND group_id = ?
-        LIMIT 1
-      `, [tournamentId, group_id]);
-
-      if (groupInTournament.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Your group is already registered in this tournament'
-        });
-      }
-
-      // Check group size (1-5 members)
-      const [groupMembers] = await db.execute(`
-        SELECT COUNT(*) as member_count FROM group_members 
-        WHERE group_id = ? AND status = 'joined'
-      `, [group_id]);
-
-      if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
-        return res.status(400).json({
-          success: false,
-          error: 'Group must have 1-5 members'
-        });
-      }
-
-      // Check if any group member is already in tournament via another group
-      const [conflictingMembers] = await db.execute(`
-        SELECT DISTINCT gm.user_id, u.username 
-        FROM group_members gm
-        JOIN users u ON gm.user_id = u.id
-        JOIN tournament_participants tp ON gm.user_id = tp.user_id
-        WHERE gm.group_id = ? 
-          AND tp.tournament_id = ?
-          AND tp.status = 'joined'
-          AND tp.group_id != ? -- Different group
-      `, [group_id, tournamentId, group_id]);
-
-      if (conflictingMembers.length > 0) {
-        const memberNames = conflictingMembers.map(m => m.username).join(', ');
-        return res.status(400).json({
-          success: false,
-          error: `These group members are already in tournament via other groups: ${memberNames}`
-        });
-      }
-
-      // Check max squads
-      const [currentSquads] = await db.execute(`
-        SELECT COUNT(DISTINCT group_id) as squad_count 
-        FROM tournament_participants 
-        WHERE tournament_id = ? AND group_id IS NOT NULL
-      `, [tournamentId]);
-
-      if (currentSquads[0].squad_count >= tournament.max_squads) {
-        return res.status(400).json({
-          success: false,
-          error: 'Tournament has reached maximum number of squads'
-        });
-      }
-    }
-
-    // For non-squad tournaments
-    if (tournament.type !== 'squad') {
-      // Check if user already joined
-      const [existing] = await db.execute(
-        `SELECT * FROM tournament_participants 
-         WHERE tournament_id = ? AND user_id = ?`,
-        [tournamentId, userId]
-      );
-
-      if (existing.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'You have already joined this tournament'
-        });
-      }
-    }
-
-    // Check tournament capacity
-    if (tournament.participants_count >= tournament.max_players) {
-      return res.status(400).json({
-        success: false,
-        error: 'Tournament is full'
-      });
-    }
-
-    // XP balance check
-    const [user] = await db.execute(
-      `SELECT xp_points, username FROM users WHERE id = ?`,
-      [userId]
-    );
-
-    if (user.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
-      });
-    }
-
-    const xpEntryFee = tournament.xp_entry_fee || 0;
-    if (xpEntryFee > 0 && user[0].xp_points < xpEntryFee) {
-      return res.status(400).json({
-        success: false,
-        error: `Insufficient XP balance. You need ${xpEntryFee} XP, you have ${user[0].xp_points} XP`
-      });
-    }
-
-    // Start transaction
-    await db.execute('START TRANSACTION');
-
-    try {
-      // Deduct XP if entry fee > 0
-      if (xpEntryFee > 0) {
-        await db.execute(
-          `UPDATE users SET xp_points = xp_points - ? WHERE id = ?`,
-          [xpEntryFee, userId]
-        );
-
-        // Record XP transaction
-        await db.execute(
-          `INSERT INTO xp_transactions (user_id, tournament_id, amount, type, description)
-           VALUES (?, ?, ?, 'tournament_entry', ?)`,
-          [userId, tournamentId, -xpEntryFee, `Tournament entry fee: ${tournament.name}`]
-        );
-      }
-
-      // Add participant(s)
-      if (tournament.type === 'squad') {
-        // Add all group members
-        const [groupMembers] = await db.execute(`
-          SELECT user_id FROM group_members 
-          WHERE group_id = ? AND status = 'joined'
-        `, [group_id]);
-
-        for (const member of groupMembers) {
-          await db.execute(
-            `INSERT INTO tournament_participants (tournament_id, user_id, group_id, status)
-             VALUES (?, ?, ?, 'joined')`,
-            [tournamentId, member.user_id, group_id, 'joined']
-          );
-        }
-
-        // Send notification to group members
-        for (const member of groupMembers) {
-          if (member.user_id !== userId) { // Don't notify yourself
-            await db.execute(
-              `INSERT INTO notifications (user_id, message, type, status, tournament_id, created_at)
-               VALUES (?, ?, 'tournament', 'unread', ?, NOW())`,
-              [
-                member.user_id,
-                `Your group has joined tournament "${tournament.name}"`,
-                tournamentId
-              ]
-            );
-          }
-        }
-      } else {
-        // Add individual participant
-        await db.execute(
-          `INSERT INTO tournament_participants (tournament_id, user_id, status)
-           VALUES (?, ?, 'joined')`,
-          [tournamentId, userId, 'joined']
-        );
-      }
-
-      // Notify tournament creator
-      if (tournament.creator_id !== userId) {
-        await db.execute(
-          `INSERT INTO notifications (user_id, message, type, status, tournament_id, created_at)
-           VALUES (?, ?, 'tournament', 'unread', ?, NOW())`,
-          [
-            tournament.creator_id,
-            `${user[0].username} has joined your tournament "${tournament.name}"`,
-            tournamentId
-          ]
-        );
-      }
-
-      await db.execute('COMMIT');
-
-      res.json({
-        success: true,
-        message: tournament.type === 'squad' 
-          ? 'Squad registered successfully!' 
-          : 'Successfully joined tournament!',
-        xp_deducted: xpEntryFee
-      });
-
-    } catch (error) {
-      await db.execute('ROLLBACK');
-      throw error;
-    }
-
-  } catch (error) {
-    console.error('❌ Join tournament error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to join tournament: ' + error.message
-    });
-  }
-});
-// GENERIC ROUTES LAST
-// GET /api/tournaments - Get all tournaments
-router.get('/', async (req, res) => {
-  try {
-    const [tournaments] = await db.execute(`
-      SELECT t.*, u.username as creator_name, 
-             COUNT(tp.id) as current_players
-      FROM tournaments t
-      LEFT JOIN users u ON t.creator_id = u.id
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      WHERE t.status != 'cancelled'
-      GROUP BY t.id
-      ORDER BY t.created_at DESC
-    `);
-
-    res.json({
-      success: true,
-      tournaments: tournaments || []
-    });
-  } catch (error) {
-    console.error('Error fetching tournaments:', error);
-    res.status(500).json({ success: false, error: 'Server error fetching tournaments' });
-  }
-});
-
-// POST /api/tournaments - Create tournament (FULLY UPDATED)
-router.post('/', authenticate, async (req, res) => {
-  let connection;
-  try {
-    const {
-      name,
-      game,
-      description,
-      max_players,
-      entry_fee,
-      prize_pool_option,
-      custom_prize_pool,
-      type,
-      start_date,
-      group_id,
-      squad_name,
-      max_squads = 8,
-      admin_monitoring = false,
-      admin_pin = null,
-      dispute_resolution = 'auto'
-    } = req.body;
-
-    const userId = req.user.id;
-    const userEmail = req.user.email;
-    const isUserAdmin = req.user.is_admin || false;
-
-    console.log('🎮 Creating tournament:', {
-      name,
-      type,
-      userId,
-      isUserAdmin,
-      admin_monitoring,
-      dispute_resolution
-    });
-
-    // ==================== VALIDATION ====================
-
-    // Required fields validation
-    if (!name || !game || !max_players || !type || !start_date) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: name, game, max_players, type, start_date'
-      });
-    }
-
-    // Tournament type permissions validation
-    if (type === 'survival' && !isUserAdmin) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only administrators can create Survival tournaments'
-      });
-    }
-
-    // Squad tournament specific validations
-    if (type === 'squad') {
-      if (!group_id) {
-        return res.status(400).json({
-          success: false,
-          error: 'Group ID is required for squad tournaments'
-        });
-      }
-      
-      // Validate user is admin of the group
-      const [isGroupAdmin] = await db.execute(`
-        SELECT 1 FROM group_members 
-        WHERE group_id = ? AND user_id = ? AND role = 'admin' AND status = 'joined'
-        LIMIT 1
-      `, [group_id, userId]);
-
-      if (isGroupAdmin.length === 0) {
-        return res.status(403).json({
-          success: false,
-          error: 'You must be an admin of the selected group to create squad tournaments'
-        });
-      }
-
-      // Validate group has 1-5 members
-      const [groupMembers] = await db.execute(`
-        SELECT COUNT(*) as member_count FROM group_members 
-        WHERE group_id = ? AND status = 'joined'
-      `, [group_id]);
-
-      if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
-        return res.status(400).json({
-          success: false,
-          error: 'Group must have 1-5 members for squad tournament'
-        });
-      }
-    }
-
-    // Validate max players
-    const maxPlayers = parseInt(max_players);
-    if (maxPlayers < 2 || maxPlayers > 100) {
-      return res.status(400).json({
-        success: false,
-        error: 'Max players must be between 2 and 100'
-      });
-    }
-
-    // Validate entry fee
-    const xpEntryFee = parseFloat(entry_fee) || 0;
-    if (xpEntryFee < 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Entry fee cannot be negative'
-      });
-    }
-
-    // Validate prize pool
-    let prize_pool = 0;
-    let platform_fee = 0;
-    let customPrizePool = parseFloat(custom_prize_pool) || 0;
-
-    if (prize_pool_option === 'entry_fee') {
-      prize_pool = (xpEntryFee * maxPlayers) * 0.85;
-      platform_fee = (xpEntryFee * maxPlayers) * 0.15;
-    } else if (prize_pool_option === 'custom') {
-      if (customPrizePool <= 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Custom prize pool must be greater than 0'
-        });
-      }
-      prize_pool = customPrizePool * 0.85;
-      platform_fee = customPrizePool * 0.15;
-    } else {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid prize pool option'
-      });
-    }
-
-    // Validate start date
-    const startDate = new Date(start_date);
-    const now = new Date();
-    if (startDate <= now) {
-      return res.status(400).json({
-        success: false,
-        error: 'Start date must be in the future'
-      });
-    }
-
-    // Validate admin PIN if provided
-    if (admin_pin && (admin_pin.length !== 4 || !/^\d+$/.test(admin_pin))) {
-      return res.status(400).json({
-        success: false,
-        error: 'Admin PIN must be 4 digits'
-      });
-    }
-
-    // Validate dispute resolution
-    const validDisputeResolutions = ['auto', 'admin', 'voting'];
-    if (!validDisputeResolutions.includes(dispute_resolution)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid dispute resolution method'
-      });
-    }
-
-    // Force admin monitoring and resolution for Survival tournaments
-    const finalAdminMonitoring = type === 'survival' ? true : admin_monitoring;
-    const finalDisputeResolution = type === 'survival' ? 'admin' : dispute_resolution;
-
-    // ==================== XP BALANCE CHECK ====================
-
-    const [user] = await db.execute(
-      `SELECT id, username, xp_points, email FROM users WHERE id = ?`,
-      [userId]
-    );
-
-    if (user.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
-      });
-    }
-
-    const userXpBalance = user[0].xp_points || 0;
-
-    if (xpEntryFee > 0 && userXpBalance < xpEntryFee) {
-      return res.status(400).json({
-        success: false,
-        error: `Insufficient XP balance. You need ${xpEntryFee} XP, you have ${userXpBalance} XP`
-      });
-    }
-
-    // ==================== DATABASE TRANSACTION ====================
-
-    connection = await db.pool.promise().getConnection();
-    await connection.beginTransaction();
-
-    try {
-      console.log('💾 Starting tournament creation transaction...');
-
-      // ==================== CREATE TOURNAMENT ====================
-
-      const [tournamentResult] = await connection.query(`
-        INSERT INTO tournaments (
-          name, game, description, creator_id, group_id, 
-          max_players, xp_entry_fee, prize_pool, custom_prize_pool, 
-          platform_fee, start_date, status, type, prize_pool_option, 
-          currency, squad_name, max_squads, max_players_per_squad,
-          admin_monitoring, admin_pin, dispute_resolution,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?, ?, 'xp', ?, ?, 5, ?, ?, ?, NOW(), NOW())
-      `, [
-        name.trim(),
-        game,
-        description ? description.trim() : null,
-        userId,
-        group_id || null,
-        maxPlayers,
-        xpEntryFee,
-        prize_pool,
-        customPrizePool,
-        platform_fee,
-        start_date,
-        type,
-        prize_pool_option,
-        squad_name ? squad_name.trim() : null,
-        max_squads,
-        finalAdminMonitoring ? 1 : 0,
-        admin_pin,
-        finalDisputeResolution
-      ]);
-
-      const tournamentId = tournamentResult.insertId;
-      console.log(`✅ Tournament created with ID: ${tournamentId}`);
-
-      // ==================== DEDUCT XP ENTRY FEE ====================
-
-      if (xpEntryFee > 0) {
-        await connection.query(`
-          UPDATE users 
-          SET xp_points = xp_points - ? 
-          WHERE id = ?
-        `, [xpEntryFee, userId]);
-
-        console.log(`💰 Deducted ${xpEntryFee} XP from user ${userId}`);
-
-        // Record XP transaction
-        const reference = `TOURNAMENT-ENTRY-${Date.now()}-${tournamentId}`;
-        await connection.query(`
-          INSERT INTO xp_transactions (
-            user_id, tournament_id, amount, type, description, status, created_at
-          ) VALUES (?, ?, ?, 'tournament_entry', ?, 'completed', NOW())
-        `, [
-          userId,
-          tournamentId,
-          -xpEntryFee,
-          `Tournament entry fee: ${name}`
-        ]);
-
-        console.log(`📝 Recorded XP transaction: ${reference}`);
-      }
-
-      // ==================== ADD PARTICIPANTS ====================
-
-      if (type === 'squad' && group_id) {
-        // Add all group members for squad tournament
-        const [groupMembers] = await connection.query(`
-          SELECT user_id FROM group_members 
-          WHERE group_id = ? AND status = 'joined'
-        `, [group_id]);
-
-        console.log(`👥 Adding ${groupMembers.length} group members to tournament`);
-
-        for (const member of groupMembers) {
-          await connection.query(`
-            INSERT INTO tournament_participants (
-              tournament_id, user_id, group_id, status, created_at
-            ) VALUES (?, ?, ?, 'joined', NOW())
-          `, [tournamentId, member.user_id, group_id, 'joined']);
-        }
-
-        console.log(`✅ Added ${groupMembers.length} group members as participants`);
-      } else {
-        // Add creator as first participant for non-squad tournaments
-        await connection.query(`
-          INSERT INTO tournament_participants (
-            tournament_id, user_id, status, created_at
-          ) VALUES (?, ?, 'joined', NOW())
-        `, [tournamentId, userId, 'joined']);
-
-        console.log(`✅ Added creator ${userId} as first participant`);
-      }
-
-      // ==================== ADMIN MONITORING SETUP ====================
-
-      if (finalAdminMonitoring) {
-        // Add creator as tournament admin with full access
-        await connection.query(`
-          INSERT INTO tournament_admins (
-            tournament_id, admin_id, role, added_by, permissions, created_at
-          ) VALUES (?, ?, 'full_access', ?, ?, NOW())
-        `, [
-          tournamentId,
-          userId,
-          userId,
-          JSON.stringify({
-            monitor_matches: true,
-            resolve_disputes: true,
-            override_results: true,
-            kick_players: true,
-            distribute_prizes: true,
-            modify_tournament: true
-          })
-        ]);
-
-        console.log(`🛡️ Added creator as tournament admin with full access`);
-
-        // If it's a Survival tournament, also add platform admins
-        if (type === 'survival') {
-          const [platformAdmins] = await connection.query(`
-            SELECT id FROM users 
-            WHERE is_admin = 1 AND id != ? AND account_status = 'active'
-            LIMIT 5
-          `, [userId]);
-
-          for (const admin of platformAdmins) {
-            await connection.query(`
-              INSERT INTO tournament_admins (
-                tournament_id, admin_id, role, added_by, permissions, created_at
-              ) VALUES (?, ?, 'moderator', ?, ?, NOW())
-            `, [
-              tournamentId,
-              admin.id,
-              userId,
-              JSON.stringify({
-                monitor_matches: true,
-                resolve_disputes: true,
-                override_results: true,
-                kick_players: false,
-                distribute_prizes: false,
-                modify_tournament: false
-              })
-            ]);
-          }
-
-          console.log(`👑 Added ${platformAdmins.length} platform admins as moderators`);
-        }
-      }
-
-      // ==================== CREATE DISPUTE RESOLUTION RECORD ====================
-
-      await connection.query(`
-        INSERT INTO match_disputes_settings (
-          tournament_id, resolution_method, admin_required, voting_threshold, created_at
-        ) VALUES (?, ?, ?, ?, NOW())
-      `, [
-        tournamentId,
-        finalDisputeResolution,
-        finalDisputeResolution === 'admin' ? 1 : 0,
-        finalDisputeResolution === 'voting' ? 51 : null // 51% majority
-      ]);
-
-      console.log(`⚖️ Set dispute resolution to: ${finalDisputeResolution}`);
-
-      // ==================== NOTIFICATIONS ====================
-
-      // Notify tournament creator
-      await connection.query(`
-        INSERT INTO notifications (
-          user_id, sender_id, message, type, status, tournament_id, created_at
-        ) VALUES (?, ?, ?, 'tournament', 'unread', ?, NOW())
-      `, [
-        userId,
-        userId,
-        `Your tournament "${name}" has been created successfully!`,
-        tournamentId
-      ]);
-
-      console.log(`📨 Notification sent to creator`);
-
-      // Notify group members for squad tournaments
-      if (type === 'squad' && group_id) {
-        const [groupMembers] = await connection.query(`
-          SELECT DISTINCT user_id FROM group_members 
-          WHERE group_id = ? AND status = 'joined' AND user_id != ?
-        `, [group_id, userId]);
-
-        for (const member of groupMembers) {
-          await connection.query(`
-            INSERT INTO notifications (
-              user_id, sender_id, message, type, status, tournament_id, created_at
-            ) VALUES (?, ?, ?, 'tournament', 'unread', ?, NOW())
-          `, [
-            member.user_id,
-            userId,
-            `Your group has been registered in tournament "${name}"`,
-            tournamentId
-          ]);
-        }
-
-        console.log(`📨 Notified ${groupMembers.length} group members`);
-      }
-
-      // Broadcast Survival tournament creation to all users
-      if (type === 'survival') {
-        await connection.query(`
-          INSERT INTO notifications (user_id, message, type, status, tournament_id, created_at)
-          SELECT id, ?, 'tournament', 'unread', ?, NOW() 
-          FROM users 
-          WHERE account_status = 'active' AND id != ?
-          LIMIT 100
-        `, [
-          `🏆 New Survival Tournament: "${name}" with ${prize_pool.toLocaleString()} XP prize pool! Join now!`,
-          tournamentId,
-          userId
-        ]);
-
-        console.log(`📢 Broadcast notification sent for Survival tournament`);
-      }
-
-      // ==================== AUDIT LOG ====================
-
-      await connection.query(`
-        INSERT INTO admin_monitoring_logs (
-          tournament_id, admin_id, action_type, details, ip_address, created_at
-        ) VALUES (?, ?, ?, ?, ?, NOW())
-      `, [
-        tournamentId,
-        userId,
-        'created_tournament',
-        JSON.stringify({
-          tournament_name: name,
-          tournament_type: type,
-          max_players: maxPlayers,
-          entry_fee: xpEntryFee,
-          prize_pool: prize_pool,
-          admin_monitoring: finalAdminMonitoring,
-          dispute_resolution: finalDisputeResolution
-        }),
-        req.ip || 'unknown'
-      ]);
-
-      console.log(`📊 Audit log recorded for tournament creation`);
-
-      // ==================== COMMIT TRANSACTION ====================
-
-      await connection.commit();
-      console.log(`✅ Tournament ${tournamentId} created successfully!`);
-
-      // ==================== SUCCESS RESPONSE ====================
-
-      res.json({
-        success: true,
-        message: 'Tournament created successfully!',
-        tournament: {
-          id: tournamentId,
-          name: name,
-          type: type,
-          status: 'upcoming',
-          max_players: maxPlayers,
-          xp_entry_fee: xpEntryFee,
-          prize_pool: prize_pool,
-          admin_monitoring: finalAdminMonitoring,
-          dispute_resolution: finalDisputeResolution,
-          start_date: start_date,
-          created_at: new Date().toISOString()
-        },
-        xp_deducted: xpEntryFee,
-        participants_added: type === 'squad' ? 'all_group_members' : 'creator_only'
-      });
-
-    } catch (error) {
-      await connection.rollback();
-      console.error('❌ Transaction rolled back:', error);
-      throw error;
-    } finally {
-      if (connection) {
-        connection.release();
-      }
-    }
-
-  } catch (error) {
-    console.error('❌ Create tournament error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create tournament: ' + error.message
-    });
-  }
-});
 // GET /api/tournaments/debug/all - Debug route to see all tournaments
 router.get('/debug/all', async (req, res) => {
   try {
@@ -1494,6 +737,38 @@ router.get('/debug/all', async (req, res) => {
     });
   }
 });
+
+// Add this route BEFORE your /:id route for debugging
+router.get('/debug/:id', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    console.log('🧪 Debug fetching tournament:', tournamentId);
+    
+    // Test 1: Simple query
+    const [simpleTest] = await db.execute(
+      'SELECT id, name FROM tournaments WHERE id = ?',
+      [tournamentId]
+    );
+    console.log('🧪 Simple test result:', simpleTest);
+    
+    // Test 2: Check participants
+    const [participantsTest] = await db.execute(
+      'SELECT * FROM tournament_participants WHERE tournament_id = ?',
+      [tournamentId]
+    );
+    console.log('🧪 Participants test:', participantsTest);
+    
+    res.json({
+      success: true,
+      simple: simpleTest,
+      participants: participantsTest
+    });
+  } catch (error) {
+    console.error('🧪 Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/tournaments/:id/bracket - Get tournament bracket (OPTIMIZED & FIXED)
 router.get('/:id/bracket', authenticate, async (req, res) => {
   try {
@@ -1672,6 +947,708 @@ router.get('/:id/bracket', authenticate, async (req, res) => {
   }
 });
 
+// ============================
+// TOURNAMENT JOIN ROUTE (UPDATED FOR XP)
+// ============================
+
+// POST /api/tournaments/:id/join - Join tournament (UPDATED)
+router.post('/:id/join', authenticate, async (req, res) => {
+  let connection;
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+    const { group_id, squad_name } = req.body; // For squad tournaments
+
+    console.log('👥 Join request:', { tournamentId, userId, group_id });
+
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT t.*, 
+             COUNT(tp.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check tournament status
+    if (tournament.status !== 'upcoming') {
+      return res.status(400).json({
+        success: false,
+        error: 'Tournament is not accepting new participants'
+      });
+    }
+
+    // SQUAD TOURNAMENT VALIDATION
+    if (tournament.type === 'squad') {
+      if (!group_id) {
+        return res.status(400).json({
+          success: false,
+          error: 'Group ID required for squad tournaments'
+        });
+      }
+
+      // Check if user is admin of the group
+      const [isGroupAdmin] = await db.execute(`
+        SELECT 1 FROM group_members 
+        WHERE group_id = ? AND user_id = ? AND role = 'admin' AND status = 'joined'
+      `, [group_id, userId]);
+
+      if (isGroupAdmin.length === 0) {
+        return res.status(403).json({
+          success: false,
+          error: 'You must be a group admin to join squad tournaments'
+        });
+      }
+
+      // Check if group already in tournament
+      const [groupInTournament] = await db.execute(`
+        SELECT 1 FROM tournament_participants 
+        WHERE tournament_id = ? AND group_id = ?
+        LIMIT 1
+      `, [tournamentId, group_id]);
+
+      if (groupInTournament.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Your group is already registered in this tournament'
+        });
+      }
+
+      // Check group size (1-5 members)
+      const [groupMembers] = await db.execute(`
+        SELECT COUNT(*) as member_count FROM group_members 
+        WHERE group_id = ? AND status = 'joined'
+      `, [group_id]);
+
+      if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
+        return res.status(400).json({
+          success: false,
+          error: 'Group must have 1-5 members'
+        });
+      }
+
+      // Check if any group member is already in tournament via another group
+      const [conflictingMembers] = await db.execute(`
+        SELECT DISTINCT gm.user_id, u.username 
+        FROM group_members gm
+        JOIN users u ON gm.user_id = u.id
+        JOIN tournament_participants tp ON gm.user_id = tp.user_id
+        WHERE gm.group_id = ? 
+          AND tp.tournament_id = ?
+          AND tp.status = 'joined'
+          AND tp.group_id != ? -- Different group
+      `, [group_id, tournamentId, group_id]);
+
+      if (conflictingMembers.length > 0) {
+        const memberNames = conflictingMembers.map(m => m.username).join(', ');
+        return res.status(400).json({
+          success: false,
+          error: `These group members are already in tournament via other groups: ${memberNames}`
+        });
+      }
+
+      // Check max squads
+      const [currentSquads] = await db.execute(`
+        SELECT COUNT(DISTINCT group_id) as squad_count 
+        FROM tournament_participants 
+        WHERE tournament_id = ? AND group_id IS NOT NULL
+      `, [tournamentId]);
+
+      if (currentSquads[0].squad_count >= tournament.max_squads) {
+        return res.status(400).json({
+          success: false,
+          error: 'Tournament has reached maximum number of squads'
+        });
+      }
+    }
+
+    // For non-squad tournaments
+    if (tournament.type !== 'squad') {
+      // Check if user already joined
+      const [existing] = await db.execute(
+        `SELECT * FROM tournament_participants 
+         WHERE tournament_id = ? AND user_id = ?`,
+        [tournamentId, userId]
+      );
+
+      if (existing.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'You have already joined this tournament'
+        });
+      }
+    }
+
+    // Check tournament capacity
+    if (tournament.participants_count >= tournament.max_players) {
+      return res.status(400).json({
+        success: false,
+        error: 'Tournament is full'
+      });
+    }
+
+    // XP balance check
+    const [user] = await db.execute(
+      `SELECT xp_points, username FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    if (user.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    const xpEntryFee = tournament.xp_entry_fee || 0;
+    if (xpEntryFee > 0 && user[0].xp_points < xpEntryFee) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient XP balance. You need ${xpEntryFee} XP, you have ${user[0].xp_points} XP`
+      });
+    }
+
+    // Get connection for transaction
+    connection = await db.pool.promise().getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Deduct XP if entry fee > 0
+      if (xpEntryFee > 0) {
+        await connection.query(
+          `UPDATE users SET xp_points = xp_points - ? WHERE id = ?`,
+          [xpEntryFee, userId]
+        );
+
+        // Record XP transaction
+        await connection.query(
+          `INSERT INTO xp_transactions (user_id, tournament_id, amount, type, description)
+           VALUES (?, ?, ?, 'spent', ?)`,
+          [userId, tournamentId, xpEntryFee, `Tournament entry fee: ${tournament.name}`]
+        );
+      }
+
+      // Add participant(s)
+      if (tournament.type === 'squad') {
+        // Add all group members
+        const [groupMembers] = await connection.query(`
+          SELECT user_id FROM group_members 
+          WHERE group_id = ? AND status = 'joined'
+        `, [group_id]);
+
+        for (const member of groupMembers) {
+          await connection.query(
+            `INSERT INTO tournament_participants (tournament_id, user_id, group_id, squad_name, status)
+             VALUES (?, ?, ?, ?, 'joined')`,
+            [tournamentId, member.user_id, group_id, squad_name || null]
+          );
+        }
+
+        // Send notification to group members
+        for (const member of groupMembers) {
+          if (member.user_id !== userId) { // Don't notify yourself
+            await connection.query(
+              `INSERT INTO notifications (user_id, message, type, status, tournament_id, created_at)
+               VALUES (?, ?, 'tournament', 'unread', ?, NOW())`,
+              [
+                member.user_id,
+                `Your group has joined tournament "${tournament.name}"`,
+                tournamentId
+              ]
+            );
+          }
+        }
+      } else {
+        // Add individual participant
+        await connection.query(
+          `INSERT INTO tournament_participants (tournament_id, user_id, status)
+           VALUES (?, ?, 'joined')`,
+          [tournamentId, userId, 'joined']
+        );
+      }
+
+      // Notify tournament creator
+      if (tournament.creator_id !== userId) {
+        await connection.query(
+          `INSERT INTO notifications (user_id, message, type, status, tournament_id, created_at)
+           VALUES (?, ?, 'tournament', 'unread', ?, NOW())`,
+          [
+            tournament.creator_id,
+            `${user[0].username} has joined your tournament "${tournament.name}"`,
+            tournamentId
+          ]
+        );
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: tournament.type === 'squad' 
+          ? 'Squad registered successfully!' 
+          : 'Successfully joined tournament!',
+        xp_deducted: xpEntryFee
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Join tournament error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to join tournament: ' + error.message
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// ============================
+// TOURNAMENT CREATION (UPDATED FOR XP SYSTEM)
+// ============================
+
+// POST /api/tournaments - Create tournament (FULLY UPDATED)
+router.post('/', authenticate, async (req, res) => {
+  let connection;
+  try {
+    const {
+      name,
+      game,
+      description,
+      max_players,
+      entry_fee,
+      prize_pool_option,
+      custom_prize_pool,
+      type,
+      start_date,
+      group_id,
+      squad_name,
+      max_squads = 8,
+      admin_monitoring = false,
+      admin_pin = null,
+      dispute_resolution = 'auto'
+    } = req.body;
+
+    const userId = req.user.id;
+    const isUserAdmin = req.user.is_admin || false;
+
+    console.log('🎮 Creating tournament:', {
+      name,
+      type,
+      userId,
+      isUserAdmin,
+      admin_monitoring,
+      dispute_resolution
+    });
+
+    // ==================== VALIDATION ====================
+
+    // Required fields validation
+    if (!name || !game || !max_players || !type || !start_date) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: name, game, max_players, type, start_date'
+      });
+    }
+
+    // Tournament type mapping from frontend to database
+    const typeMapping = {
+      '1v1': 'onevsone',
+      'freeforall': 'freeforall', 
+      'squad': 'squad',
+      'survival': 'survival'
+    };
+    
+    const dbType = typeMapping[type] || 'onevsone';
+
+    // Tournament type permissions validation
+    if (dbType === 'survival' && !isUserAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can create Survival tournaments'
+      });
+    }
+
+    // Squad tournament specific validations
+    if (dbType === 'squad') {
+      if (!group_id) {
+        return res.status(400).json({
+          success: false,
+          error: 'Group ID is required for squad tournaments'
+        });
+      }
+      
+      // Validate user is admin of the group
+      const [isGroupAdmin] = await db.execute(`
+        SELECT 1 FROM group_members 
+        WHERE group_id = ? AND user_id = ? AND role = 'admin' AND status = 'joined'
+        LIMIT 1
+      `, [group_id, userId]);
+
+      if (isGroupAdmin.length === 0) {
+        return res.status(403).json({
+          success: false,
+          error: 'You must be an admin of the selected group to create squad tournaments'
+        });
+      }
+
+      // Validate group has 1-5 members
+      const [groupMembers] = await db.execute(`
+        SELECT COUNT(*) as member_count FROM group_members 
+        WHERE group_id = ? AND status = 'joined'
+      `, [group_id]);
+
+      if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
+        return res.status(400).json({
+          success: false,
+          error: 'Group must have 1-5 members for squad tournament'
+        });
+      }
+    }
+
+    // Validate max players
+    const maxPlayers = parseInt(max_players);
+    if (maxPlayers < 2 || maxPlayers > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Max players must be between 2 and 100'
+      });
+    }
+
+    // Validate entry fee
+    const xpEntryFee = parseFloat(entry_fee) || 0;
+    if (xpEntryFee < 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Entry fee cannot be negative'
+      });
+    }
+
+    // Validate prize pool
+    let prize_pool = 0;
+    let platform_fee = 0;
+    let customPrizePool = parseFloat(custom_prize_pool) || 0;
+
+    if (prize_pool_option === 'entry_fee') {
+      prize_pool = (xpEntryFee * maxPlayers) * 0.85;
+      platform_fee = (xpEntryFee * maxPlayers) * 0.15;
+    } else if (prize_pool_option === 'custom') {
+      if (customPrizePool <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Custom prize pool must be greater than 0'
+        });
+      }
+      prize_pool = customPrizePool * 0.85;
+      platform_fee = customPrizePool * 0.15;
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid prize pool option'
+      });
+    }
+
+    // Validate start date
+    const startDate = new Date(start_date);
+    const now = new Date();
+    if (startDate <= now) {
+      return res.status(400).json({
+        success: false,
+        error: 'Start date must be in the future'
+      });
+    }
+
+    // Validate admin PIN if provided
+    if (admin_pin && (admin_pin.length !== 4 || !/^\d+$/.test(admin_pin))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Admin PIN must be 4 digits'
+      });
+    }
+
+    // Validate dispute resolution
+    const validDisputeResolutions = ['auto', 'admin', 'voting'];
+    if (!validDisputeResolutions.includes(dispute_resolution)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid dispute resolution method'
+      });
+    }
+
+    // Force admin monitoring and resolution for Survival tournaments
+    const finalAdminMonitoring = dbType === 'survival' ? true : admin_monitoring;
+    const finalDisputeResolution = dbType === 'survival' ? 'admin' : dispute_resolution;
+
+    // ==================== XP BALANCE CHECK ====================
+
+    const [user] = await db.execute(
+      `SELECT id, username, xp_points FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    if (user.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    const userXpBalance = user[0].xp_points || 0;
+
+    if (xpEntryFee > 0 && userXpBalance < xpEntryFee) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient XP balance. You need ${xpEntryFee} XP, you have ${userXpBalance} XP`
+      });
+    }
+
+    // ==================== DATABASE TRANSACTION ====================
+
+    connection = await db.pool.promise().getConnection();
+    await connection.beginTransaction();
+
+    try {
+      console.log('💾 Starting tournament creation transaction...');
+
+      // ==================== CREATE TOURNAMENT ====================
+
+      const [tournamentResult] = await connection.query(`
+        INSERT INTO tournaments (
+          name, game, description, creator_id, group_id, 
+          max_players, xp_entry_fee, prize_pool, custom_prize_pool, 
+          platform_fee, start_date, status, type, prize_pool_option, 
+          currency, squad_name, max_squads, max_players_per_squad,
+          admin_monitoring, admin_pin, dispute_resolution,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?, ?, 'xp', ?, ?, 5, ?, ?, ?, NOW(), NOW())
+      `, [
+        name.trim(),
+        game,
+        description ? description.trim() : null,
+        userId,
+        group_id || null,
+        maxPlayers,
+        xpEntryFee,
+        prize_pool,
+        customPrizePool,
+        platform_fee,
+        start_date,
+        dbType,
+        prize_pool_option,
+        squad_name ? squad_name.trim() : null,
+        max_squads,
+        finalAdminMonitoring ? 1 : 0,
+        admin_pin,
+        finalDisputeResolution
+      ]);
+
+      const tournamentId = tournamentResult.insertId;
+      console.log(`✅ Tournament created with ID: ${tournamentId}`);
+
+      // ==================== DEDUCT XP ENTRY FEE ====================
+
+      if (xpEntryFee > 0) {
+        await connection.query(`
+          UPDATE users 
+          SET xp_points = xp_points - ? 
+          WHERE id = ?
+        `, [xpEntryFee, userId]);
+
+        console.log(`💰 Deducted ${xpEntryFee} XP from user ${userId}`);
+
+        // Record XP transaction
+        await connection.query(`
+          INSERT INTO xp_transactions (
+            user_id, tournament_id, amount, type, description, created_at
+          ) VALUES (?, ?, ?, 'spent', ?, NOW())
+        `, [
+          userId,
+          tournamentId,
+          xpEntryFee,
+          `Tournament entry fee: ${name}`
+        ]);
+
+        console.log(`📝 Recorded XP transaction`);
+      }
+
+      // ==================== ADD PARTICIPANTS ====================
+
+      if (dbType === 'squad' && group_id) {
+        // Add all group members for squad tournament
+        const [groupMembers] = await connection.query(`
+          SELECT user_id FROM group_members 
+          WHERE group_id = ? AND status = 'joined'
+        `, [group_id]);
+
+        console.log(`👥 Adding ${groupMembers.length} group members to tournament`);
+
+        for (const member of groupMembers) {
+          await connection.query(`
+            INSERT INTO tournament_participants (
+              tournament_id, user_id, group_id, squad_name, status, created_at
+            ) VALUES (?, ?, ?, ?, 'joined', NOW())
+          `, [tournamentId, member.user_id, group_id, squad_name || null]);
+        }
+
+        console.log(`✅ Added ${groupMembers.length} group members as participants`);
+      } else {
+        // Add creator as first participant for non-squad tournaments
+        await connection.query(`
+          INSERT INTO tournament_participants (
+            tournament_id, user_id, status, created_at
+          ) VALUES (?, ?, 'joined', NOW())
+        `, [tournamentId, userId, 'joined']);
+
+        console.log(`✅ Added creator ${userId} as first participant`);
+      }
+
+      // ==================== ADMIN MONITORING SETUP ====================
+
+      if (finalAdminMonitoring) {
+        // Add creator as tournament admin with full access
+        await connection.query(`
+          INSERT INTO tournament_admins (
+            tournament_id, admin_id, role, added_by, permissions, created_at
+          ) VALUES (?, ?, 'full_access', ?, ?, NOW())
+        `, [
+          tournamentId,
+          userId,
+          userId,
+          JSON.stringify({
+            monitor_matches: true,
+            resolve_disputes: true,
+            override_results: true,
+            kick_players: true,
+            distribute_prizes: true,
+            modify_tournament: true
+          })
+        ]);
+
+        console.log(`🛡️ Added creator as tournament admin with full access`);
+
+        // Record in admin logs
+        await connection.query(`
+          INSERT INTO admin_monitoring_logs (
+            tournament_id, admin_id, action_type, details, created_at
+          ) VALUES (?, ?, 'created_tournament', ?, NOW())
+        `, [
+          tournamentId,
+          userId,
+          JSON.stringify({
+            tournament_name: name,
+            tournament_type: dbType,
+            entry_fee: xpEntryFee,
+            admin_monitoring: true,
+            dispute_resolution: finalDisputeResolution
+          })
+        ]);
+      }
+
+      // ==================== NOTIFICATIONS ====================
+
+      // Notify tournament creator
+      await connection.query(`
+        INSERT INTO notifications (
+          user_id, sender_id, message, type, status, tournament_id, created_at
+        ) VALUES (?, ?, ?, 'tournament', 'unread', ?, NOW())
+      `, [
+        userId,
+        userId,
+        `Your tournament "${name}" has been created successfully!`,
+        tournamentId
+      ]);
+
+      console.log(`📨 Notification sent to creator`);
+
+      // Notify group members for squad tournaments
+      if (dbType === 'squad' && group_id) {
+        const [groupMembers] = await connection.query(`
+          SELECT DISTINCT user_id FROM group_members 
+          WHERE group_id = ? AND status = 'joined' AND user_id != ?
+        `, [group_id, userId]);
+
+        for (const member of groupMembers) {
+          await connection.query(`
+            INSERT INTO notifications (
+              user_id, sender_id, message, type, status, tournament_id, created_at
+            ) VALUES (?, ?, ?, 'tournament', 'unread', ?, NOW())
+          `, [
+            member.user_id,
+            userId,
+            `Your group has been registered in tournament "${name}"`,
+            tournamentId
+          ]);
+        }
+
+        console.log(`📨 Notified ${groupMembers.length} group members`);
+      }
+
+      // ==================== COMMIT TRANSACTION ====================
+
+      await connection.commit();
+      console.log(`✅ Tournament ${tournamentId} created successfully!`);
+
+      // ==================== SUCCESS RESPONSE ====================
+
+      res.json({
+        success: true,
+        message: 'Tournament created successfully!',
+        tournament: {
+          id: tournamentId,
+          name: name,
+          type: dbType,
+          status: 'upcoming',
+          max_players: maxPlayers,
+          xp_entry_fee: xpEntryFee,
+          prize_pool: prize_pool,
+          admin_monitoring: finalAdminMonitoring,
+          dispute_resolution: finalDisputeResolution,
+          start_date: start_date,
+          created_at: new Date().toISOString()
+        },
+        xp_deducted: xpEntryFee,
+        participants_added: dbType === 'squad' ? 'all_group_members' : 'creator_only'
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      console.error('❌ Transaction rolled back:', error);
+      throw error;
+    } finally {
+      if (connection) {
+        connection.release();
+      }
+    }
+
+  } catch (error) {
+    console.error('❌ Create tournament error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create tournament: ' + error.message
+    });
+  }
+});
+
+// ============================
+// OTHER ROUTES
+// ============================
+
 // POST /api/tournaments/:id/start - Start tournament and generate bracket (FIXED)
 router.post('/:id/start', authenticate, async (req, res) => {
   try {
@@ -1787,35 +1764,6 @@ router.post('/:id/start', authenticate, async (req, res) => {
     }
 
     console.log('✅ Generated matches:', bracketMatches.length);
-	// In your /:id/start endpoint, after generating matches:
-if (tournament.type === 'onevsone') {
-  console.log('🎮 Generating 1v1 bracket...');
-  bracketMatches = generate1v1Bracket(participants, tournamentId, tournament.start_date);
-  
-  // Insert bracket matches
-  for (const match of bracketMatches) {
-    // Only mark matches as 'ongoing' if they have both players and it's match time
-    let status = 'upcoming';
-    if (match.player1_id && match.player2_id && 
-        new Date(match.match_time) <= new Date()) {
-      status = 'ongoing';
-    }
-    
-    await db.execute(
-      `INSERT INTO tournament_matches 
-       (tournament_id, player1_id, player2_id, round_number, match_time, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-      [
-        tournamentId, 
-        match.player1_id, 
-        match.player2_id, 
-        match.round, 
-        match.match_time, 
-        status
-      ]
-    );
-  }
-}
     
     // Insert bracket matches (with null checks)
     for (const match of bracketMatches) {
@@ -1894,79 +1842,474 @@ if (tournament.type === 'onevsone') {
     });
   }
 });
-// POST /api/tournaments/:id/matches/:matchId/result - Submit match result
-router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
+
+// ============================
+// REMAINING ROUTES (KEEP AS IS)
+// ============================
+
+// GET /api/tournaments - Get all tournaments (ROOT ROUTES LAST)
+router.get('/', async (req, res) => {
   try {
-    const { tournamentId, matchId } = { 
-      tournamentId: req.params.id, 
-      matchId: req.params.matchId 
-    };
-    const { winnerId } = req.body;
-    const userId = req.user.id;
-
-    console.log('🏆 Submitting match result:', { tournamentId, matchId, winnerId, userId });
-
-    // Check if match exists and user is participant
-    const [matches] = await db.execute(`
-      SELECT tm.*, t.type as tournament_type, t.prize_pool
-      FROM tournament_matches tm
-      JOIN tournaments t ON tm.tournament_id = t.id
-      WHERE tm.id = ? AND tm.tournament_id = ?
-        AND (tm.player1_id = ? OR tm.player2_id = ?)
-        AND tm.status = 'ongoing'
-    `, [matchId, tournamentId, userId, userId]);
-
-    if (matches.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Match not found or you are not a participant'
-      });
-    }
-
-    const match = matches[0];
-
-    // Check if winner is valid
-    if (winnerId !== match.player1_id && winnerId !== match.player2_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid winner selection'
-      });
-    }
-
-    // Update match result
-    await db.execute(
-      `UPDATE tournament_matches 
-       SET winner_id = ?, status = 'completed', completed_at = NOW()
-       WHERE id = ?`,
-      [winnerId, matchId]
-    );
-
-    console.log('✅ Match result updated');
-
-    // For 1v1 tournaments, advance winner to next round
-    if (match.tournament_type === 'onevsone') {
-      await advanceWinnerToNextRound(tournamentId, matchId, winnerId, match.round_number);
-    }
-
-    // Check if tournament is completed
-    await checkTournamentCompletion(tournamentId);
+    const [tournaments] = await db.execute(`
+      SELECT t.*, u.username as creator_name, 
+             COUNT(tp.id) as current_players
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.status != 'cancelled'
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+    `);
 
     res.json({
       success: true,
-      message: 'Match result submitted successfully!'
+      tournaments: tournaments || []
+    });
+  } catch (error) {
+    console.error('Error fetching tournaments:', error);
+    res.status(500).json({ success: false, error: 'Server error fetching tournaments' });
+  }
+});
+
+// GET /api/tournaments/:id/chat - Get tournament chat messages
+router.get('/:id/chat', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.userId || req.user.id;
+
+    // Check if user is participant
+    const [isParticipant] = await db.execute(`
+      SELECT 1 FROM tournament_participants 
+      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
+    `, [tournamentId, userId]);
+
+    if (isParticipant.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament participants can access chat'
+      });
+    }
+
+    // Get chat messages
+    const [messages] = await db.execute(`
+      SELECT tc.*, u.username, u.profile_pic
+      FROM tournament_chat tc
+      JOIN users u ON tc.user_id = u.id
+      WHERE tc.tournament_id = ?
+      ORDER BY tc.created_at ASC
+      LIMIT 100
+    `, [tournamentId]);
+
+    res.json({
+      success: true,
+      messages: messages || []
     });
 
   } catch (error) {
-    console.error('❌ Submit match result error:', error);
+    console.error('❌ Get chat error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to submit match result: ' + error.message
+      error: 'Failed to get chat messages: ' + error.message
+    });
+  }
+});
+
+// POST /api/tournaments/:id/chat - Send chat message
+router.post('/:id/chat', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.userId || req.user.id;
+    const { message } = req.body;
+
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message cannot be empty'
+      });
+    }
+
+    if (message.length > 500) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message too long (max 500 characters)'
+      });
+    }
+
+    // Check if user is participant
+    const [isParticipant] = await db.execute(`
+      SELECT 1 FROM tournament_participants 
+      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
+    `, [tournamentId, userId]);
+
+    if (isParticipant.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament participants can send messages'
+      });
+    }
+
+    // Insert message
+    const [result] = await db.execute(`
+      INSERT INTO tournament_chat (tournament_id, user_id, message, created_at)
+      VALUES (?, ?, ?, NOW())
+    `, [tournamentId, userId, message.trim()]);
+
+    // Get the inserted message with user details
+    const [insertedMessage] = await db.execute(`
+      SELECT tc.*, u.username, u.profile_pic
+      FROM tournament_chat tc
+      JOIN users u ON tc.user_id = u.id
+      WHERE tc.id = ?
+    `, [result.insertId]);
+
+    res.json({
+      success: true,
+      message: 'Message sent successfully',
+      chatMessage: insertedMessage[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Send chat error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to send message: ' + error.message
+    });
+  }
+});
+
+// DELETE /api/tournaments/:id/participants/:userId - Kick participant from tournament
+router.delete('/:id/participants/:userId', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const targetUserId = req.params.userId;
+    const adminUserId = req.user.userId || req.user.id;
+
+    console.log('👢 Kicking participant:', { tournamentId, targetUserId, adminUserId });
+
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT t.*, COUNT(tp.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check permissions
+    if (tournament.creator_id !== adminUserId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament creator can kick participants'
+      });
+    }
+
+    if (tournament.status !== 'upcoming') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot kick participants after tournament has started'
+      });
+    }
+
+    // Check if target is participant
+    const [isParticipant] = await db.execute(`
+      SELECT * FROM tournament_participants 
+      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
+    `, [tournamentId, targetUserId]);
+
+    if (isParticipant.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User is not a participant in this tournament'
+      });
+    }
+
+    // Cannot kick yourself or the creator
+    if (parseInt(targetUserId) === parseInt(adminUserId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot kick yourself from tournament'
+      });
+    }
+
+    // Start transaction
+    await db.execute('START TRANSACTION');
+
+    try {
+      // Update participant status to kicked
+      await db.execute(`
+        UPDATE tournament_participants 
+        SET status = 'declined'
+        WHERE tournament_id = ? AND user_id = ?
+      `, [tournamentId, targetUserId]);
+
+      // Refund entry fee if tournament hasn't started
+      if (tournament.entry_fee > 0) {
+        await db.execute(`
+          UPDATE users 
+          SET balance = balance + ?
+          WHERE id = ?
+        `, [tournament.entry_fee, targetUserId]);
+
+        // Record refund transaction
+        const reference = `KICK-REFUND-${Date.now()}-${tournamentId}`;
+        await db.execute(`
+          INSERT INTO transactions 
+          (user_id, amount, currency, type, status, reference, description, created_at)
+          VALUES (?, ?, 'NGN', 'refund', 'completed', ?, ?, NOW())
+        `, [
+          targetUserId,
+          tournament.entry_fee,
+          reference,
+          `Refund for tournament kick: ${tournament.name}`
+        ]);
+      }
+
+      // Send notification to kicked user
+      const [adminUser] = await db.execute(
+        `SELECT username FROM users WHERE id = ?`,
+        [adminUserId]
+      );
+
+      await db.execute(`
+        INSERT INTO notifications 
+        (user_id, sender_id, message, type, status, tournament_id, created_at)
+        VALUES (?, ?, ?, 'system', 'unread', ?, NOW())
+      `, [
+        targetUserId,
+        adminUserId,
+        `You have been removed from tournament '${tournament.name}' by ${adminUser[0]?.username || 'tournament admin'}`,
+        tournamentId
+      ]);
+
+      await db.execute('COMMIT');
+
+      console.log(`✅ User ${targetUserId} kicked from tournament ${tournamentId}`);
+
+      res.json({
+        success: true,
+        message: 'Participant removed successfully',
+        refunded: tournament.entry_fee > 0
+      });
+
+    } catch (error) {
+      await db.execute('ROLLBACK');
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Kick participant error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to kick participant: ' + error.message
+    });
+  }
+});
+
+// POST /api/tournaments/:id/auto-complete - Auto-complete tournament when all matches are done
+router.post('/:id/auto-complete', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.userId || req.user.id;
+
+    console.log('🤖 Auto-completing tournament:', tournamentId);
+
+    // Check if user is creator
+    const [tournaments] = await db.execute(
+      `SELECT creator_id FROM tournaments WHERE id = ?`,
+      [tournamentId]
+    );
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    if (tournaments[0].creator_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament creator can auto-complete'
+      });
+    }
+
+    // Check and complete tournament
+    const completed = await checkTournamentCompletion(tournamentId, false);
+
+    if (completed) {
+      res.json({
+        success: true,
+        message: 'Tournament auto-completed successfully!',
+        tournament_id: tournamentId
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: 'Tournament cannot be completed yet. Not all matches are finished.'
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Auto-complete tournament error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to auto-complete tournament: ' + error.message
+    });
+  }
+});
+
+// POST /api/tournaments/:id/cancel - Cancel tournament with refunds
+router.post('/:id/cancel', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.userId || req.user.id;
+
+    console.log('🚫 Canceling tournament:', { tournamentId, userId });
+
+    // Get tournament with participants
+    const [tournaments] = await db.execute(`
+      SELECT t.*, 
+             COUNT(tp.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check permissions
+    if (tournament.creator_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament creator can cancel tournament'
+      });
+    }
+
+    if (tournament.status === 'completed' || tournament.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        error: `Tournament is already ${tournament.status}`
+      });
+    }
+
+    // Get all participants to refund
+    const [participants] = await db.execute(`
+      SELECT tp.user_id, u.username, u.email
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      WHERE tp.tournament_id = ? AND tp.status = 'joined'
+    `, [tournamentId]);
+
+    // Start transaction
+    await db.execute('START TRANSACTION');
+
+    try {
+      // Update tournament status
+      await db.execute(
+        `UPDATE tournaments SET status = 'cancelled', completed_at = NOW() WHERE id = ?`,
+        [tournamentId]
+      );
+
+      // Refund entry fees to all participants
+      if (tournament.entry_fee > 0) {
+        for (const participant of participants) {
+          await db.execute(`
+            UPDATE users 
+            SET balance = balance + ?
+            WHERE id = ?
+          `, [tournament.entry_fee, participant.user_id]);
+
+          // Record refund transaction
+          const reference = `TOURNAMENT-CANCEL-${Date.now()}-${tournamentId}`;
+          await db.execute(`
+            INSERT INTO transactions 
+            (user_id, amount, currency, type, status, reference, description, created_at)
+            VALUES (?, ?, 'NGN', 'refund', 'completed', ?, ?, NOW())
+          `, [
+            participant.user_id,
+            tournament.entry_fee,
+            reference,
+            `Refund for cancelled tournament: ${tournament.name}`
+          ]);
+        }
+      }
+
+      // Send notifications to all participants
+      for (const participant of participants) {
+        await db.execute(`
+          INSERT INTO notifications 
+          (user_id, message, type, status, tournament_id, created_at)
+          VALUES (?, ?, 'system', 'unread', ?, NOW())
+        `, [
+          participant.user_id,
+          `The tournament '${tournament.name}' has been cancelled by the creator. ${tournament.entry_fee > 0 ? 'Your entry fee has been refunded.' : ''}`,
+          tournamentId
+        ]);
+      }
+
+      // Record revenue reversal if platform fee was collected
+      if (tournament.platform_fee > 0) {
+        await db.execute(`
+          INSERT INTO revenue 
+          (tournament_id, amount, revenue_date, notes)
+          VALUES (?, ?, NOW(), ?)
+        `, [
+          tournamentId,
+          -tournament.platform_fee,
+          `Refunded platform fee from cancelled tournament: ${tournament.name}`
+        ]);
+      }
+
+      await db.execute('COMMIT');
+
+      console.log(`✅ Tournament ${tournamentId} cancelled successfully. Refunded ${participants.length} participants.`);
+
+      res.json({
+        success: true,
+        message: 'Tournament cancelled successfully',
+        refunds: {
+          participants: participants.length,
+          total_amount: tournament.entry_fee * participants.length,
+          entry_fee: tournament.entry_fee
+        }
+      });
+
+    } catch (error) {
+      await db.execute('ROLLBACK');
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Cancel tournament error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cancel tournament: ' + error.message
     });
   }
 });
 
 // ============================
-// HELPER FUNCTIONS
+// HELPER FUNCTIONS (ALL INCLUDED)
 // ============================
 
 async function getTournamentParticipants(tournamentId) {
@@ -2063,6 +2406,7 @@ function generate1v1Bracket(participants, tournamentId, startDate) {
   console.log('✅ Total matches generated:', matches.length);
   return matches;
 }
+
 function generateSquadBracket(tournamentId, startDate) {
   // For squad tournaments, we need to get groups
   // This is a placeholder - you'll need to implement based on your group structure
@@ -2091,6 +2435,7 @@ async function notifyTournamentStart(tournamentId, tournamentName) {
     console.error('Notification error:', error);
   }
 }
+
 async function sendTournamentNotification(tournamentId, userId, message, type = 'tournament') {
   try {
     await db.execute(
@@ -2126,6 +2471,7 @@ async function broadcastTournamentNotification(tournamentId, message, excludeUse
     console.error('❌ Broadcast notification error:', error);
   }
 }
+
 async function advanceWinnerToNextRound(tournamentId, matchId, winnerId, currentRound, connection) {
   try {
     const nextRound = currentRound + 1;
@@ -2206,6 +2552,7 @@ async function getMatchPositionInBracket(matchId) {
   
   return match.findIndex(m => m.id === matchId) + 1;
 }
+
 // Function to update match statuses (run every minute via cron or setInterval)
 async function updateMatchStatuses() {
   try {
@@ -2339,6 +2686,7 @@ async function checkTournamentCompletion(tournamentId, forceComplete = false, co
     return false;
   }
 }
+
 async function completeTournamentWithWinner(tournamentId, winnerId, tournament, connection = null) {
   const query = connection ? connection.query.bind(connection) : db.execute.bind(db);
   
@@ -2569,6 +2917,7 @@ async function notifyTournamentCompletion(tournamentId, tournamentName, winnerId
     console.error('Notify tournament completion error:', error);
   }
 }
+
 async function updateUserRank(userId) {
   try {
     const [user] = await db.execute(`
@@ -2637,82 +2986,6 @@ function meetsRankRequirements(user, requirement) {
   return true;
 }
 
-async function distributePrizePool(tournamentId, winnerId) {
-  try {
-    const [tournaments] = await db.execute(`
-      SELECT t.*, 
-             COUNT(tp.id) as participant_count
-      FROM tournaments t
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      WHERE t.id = ?
-      GROUP BY t.id
-    `, [tournamentId]);
-
-    if (tournaments.length === 0 || tournaments[0].prize_pool <= 0) {
-      return;
-    }
-
-    const tournament = tournaments[0];
-    const prizeAmount = tournament.prize_pool;
-
-    // Add prize to winner's balance
-    await db.execute(
-      `UPDATE users SET balance = balance + ? WHERE id = ?`,
-      [prizeAmount, winnerId]
-    );
-
-    // Record transaction
-    const reference = `TOURNAMENT-WIN-${Date.now()}-${tournamentId}`;
-    await db.execute(`
-      INSERT INTO transactions 
-      (user_id, amount, currency, type, status, reference, description, created_at)
-      VALUES (?, ?, 'NGN', 'winning', 'completed', ?, ?, NOW())
-    `, [
-      winnerId,
-      prizeAmount,
-      reference,
-      `Tournament winnings: ${tournament.name}`
-    ]);
-
-    console.log(`💰 Prize ₦${prizeAmount.toLocaleString()} distributed to winner ${winnerId}`);
-
-  } catch (error) {
-    console.error('Distribute prize pool error:', error);
-    throw error;
-  }
-}
-// Function to check and start matches that are ready
-async function startReadyMatches(tournamentId, connection) {
-  try {
-    // Find matches that are 'upcoming' and have both players assigned
-    const [readyMatches] = await connection.query(`
-      SELECT id, player1_id, player2_id
-      FROM tournament_matches
-      WHERE tournament_id = ? 
-        AND status = 'upcoming'
-        AND player1_id IS NOT NULL 
-        AND player2_id IS NOT NULL
-        AND match_time <= NOW() -- Only start if match time has arrived
-    `, [tournamentId]);
-
-    for (const match of readyMatches) {
-      await connection.query(`
-        UPDATE tournament_matches 
-        SET status = 'ongoing'
-        WHERE id = ?
-      `, [match.id]);
-      
-      console.log(`✅ Started match ${match.id} with players ${match.player1_id} vs ${match.player2_id}`);
-    }
-    
-    return readyMatches.length;
-  } catch (error) {
-    console.error('Start ready matches error:', error);
-    return 0;
-  }
-}
-
 async function distributePrizePool(tournamentId, winnerId, tournament, connection = null) {
   const query = connection ? connection.query.bind(connection) : db.execute.bind(db);
   
@@ -2751,6 +3024,37 @@ async function distributePrizePool(tournamentId, winnerId, tournament, connectio
   }
 }
 
+// Function to check and start matches that are ready
+async function startReadyMatches(tournamentId, connection) {
+  try {
+    // Find matches that are 'upcoming' and have both players assigned
+    const [readyMatches] = await connection.query(`
+      SELECT id, player1_id, player2_id
+      FROM tournament_matches
+      WHERE tournament_id = ? 
+        AND status = 'upcoming'
+        AND player1_id IS NOT NULL 
+        AND player2_id IS NOT NULL
+        AND match_time <= NOW() -- Only start if match time has arrived
+    `, [tournamentId]);
+
+    for (const match of readyMatches) {
+      await connection.query(`
+        UPDATE tournament_matches 
+        SET status = 'ongoing'
+        WHERE id = ?
+      `, [match.id]);
+      
+      console.log(`✅ Started match ${match.id} with players ${match.player1_id} vs ${match.player2_id}`);
+    }
+    
+    return readyMatches.length;
+  } catch (error) {
+    console.error('Start ready matches error:', error);
+    return 0;
+  }
+}
+
 function getRoundName(roundNumber, totalMatches) {
   const roundNames = {
     1: 'Round 1',
@@ -2762,436 +3066,5 @@ function getRoundName(roundNumber, totalMatches) {
   
   return roundNames[roundNumber] || `Round ${roundNumber}`;
 }
-// GET /api/tournaments/:id/chat - Get tournament chat messages
-router.get('/:id/chat', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
 
-    // Check if user is participant
-    const [isParticipant] = await db.execute(`
-      SELECT 1 FROM tournament_participants 
-      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
-    `, [tournamentId, userId]);
-
-    if (isParticipant.length === 0) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only tournament participants can access chat'
-      });
-    }
-
-    // Get chat messages
-    const [messages] = await db.execute(`
-      SELECT tc.*, u.username, u.profile_pic
-      FROM tournament_chat tc
-      JOIN users u ON tc.user_id = u.id
-      WHERE tc.tournament_id = ?
-      ORDER BY tc.created_at ASC
-      LIMIT 100
-    `, [tournamentId]);
-
-    res.json({
-      success: true,
-      messages: messages || []
-    });
-
-  } catch (error) {
-    console.error('❌ Get chat error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get chat messages: ' + error.message
-    });
-  }
-});
-
-// POST /api/tournaments/:id/chat - Send chat message
-router.post('/:id/chat', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
-    const { message } = req.body;
-
-    if (!message || message.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Message cannot be empty'
-      });
-    }
-
-    if (message.length > 500) {
-      return res.status(400).json({
-        success: false,
-        error: 'Message too long (max 500 characters)'
-      });
-    }
-
-    // Check if user is participant
-    const [isParticipant] = await db.execute(`
-      SELECT 1 FROM tournament_participants 
-      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
-    `, [tournamentId, userId]);
-
-    if (isParticipant.length === 0) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only tournament participants can send messages'
-      });
-    }
-
-    // Insert message
-    const [result] = await db.execute(`
-      INSERT INTO tournament_chat (tournament_id, user_id, message, created_at)
-      VALUES (?, ?, ?, NOW())
-    `, [tournamentId, userId, message.trim()]);
-
-    // Get the inserted message with user details
-    const [insertedMessage] = await db.execute(`
-      SELECT tc.*, u.username, u.profile_pic
-      FROM tournament_chat tc
-      JOIN users u ON tc.user_id = u.id
-      WHERE tc.id = ?
-    `, [result.insertId]);
-
-    res.json({
-      success: true,
-      message: 'Message sent successfully',
-      chatMessage: insertedMessage[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Send chat error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to send message: ' + error.message
-    });
-  }
-});
-// DELETE /api/tournaments/:id/participants/:userId - Kick participant from tournament
-router.delete('/:id/participants/:userId', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const targetUserId = req.params.userId;
-    const adminUserId = req.user.userId || req.user.id;
-
-    console.log('👢 Kicking participant:', { tournamentId, targetUserId, adminUserId });
-
-    // Get tournament details
-    const [tournaments] = await db.execute(`
-      SELECT t.*, COUNT(tp.id) as participants_count
-      FROM tournaments t
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      WHERE t.id = ?
-      GROUP BY t.id
-    `, [tournamentId]);
-
-    if (tournaments.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Tournament not found'
-      });
-    }
-
-    const tournament = tournaments[0];
-
-    // Check permissions
-    if (tournament.creator_id !== adminUserId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only tournament creator can kick participants'
-      });
-    }
-
-    if (tournament.status !== 'upcoming') {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot kick participants after tournament has started'
-      });
-    }
-
-    // Check if target is participant
-    const [isParticipant] = await db.execute(`
-      SELECT * FROM tournament_participants 
-      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
-    `, [tournamentId, targetUserId]);
-
-    if (isParticipant.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'User is not a participant in this tournament'
-      });
-    }
-
-    // Cannot kick yourself or the creator
-    if (parseInt(targetUserId) === parseInt(adminUserId)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot kick yourself from tournament'
-      });
-    }
-
-    // Start transaction
-    await db.execute('START TRANSACTION');
-
-    try {
-      // Update participant status to kicked
-      await db.execute(`
-        UPDATE tournament_participants 
-        SET status = 'declined'
-        WHERE tournament_id = ? AND user_id = ?
-      `, [tournamentId, targetUserId]);
-
-      // Refund entry fee if tournament hasn't started
-      if (tournament.entry_fee > 0) {
-        await db.execute(`
-          UPDATE users 
-          SET balance = balance + ?
-          WHERE id = ?
-        `, [tournament.entry_fee, targetUserId]);
-
-        // Record refund transaction
-        const reference = `KICK-REFUND-${Date.now()}-${tournamentId}`;
-        await db.execute(`
-          INSERT INTO transactions 
-          (user_id, amount, currency, type, status, reference, description, created_at)
-          VALUES (?, ?, 'NGN', 'refund', 'completed', ?, ?, NOW())
-        `, [
-          targetUserId,
-          tournament.entry_fee,
-          reference,
-          `Refund for tournament kick: ${tournament.name}`
-        ]);
-      }
-
-      // Send notification to kicked user
-      const [adminUser] = await db.execute(
-        `SELECT username FROM users WHERE id = ?`,
-        [adminUserId]
-      );
-
-      await db.execute(`
-        INSERT INTO notifications 
-        (user_id, sender_id, message, type, status, tournament_id, created_at)
-        VALUES (?, ?, ?, 'system', 'unread', ?, NOW())
-      `, [
-        targetUserId,
-        adminUserId,
-        `You have been removed from tournament '${tournament.name}' by ${adminUser[0]?.username || 'tournament admin'}`,
-        tournamentId
-      ]);
-
-      await db.execute('COMMIT');
-
-      console.log(`✅ User ${targetUserId} kicked from tournament ${tournamentId}`);
-
-      res.json({
-        success: true,
-        message: 'Participant removed successfully',
-        refunded: tournament.entry_fee > 0
-      });
-
-    } catch (error) {
-      await db.execute('ROLLBACK');
-      throw error;
-    }
-
-  } catch (error) {
-    console.error('❌ Kick participant error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to kick participant: ' + error.message
-    });
-  }
-});
-// POST /api/tournaments/:id/auto-complete - Auto-complete tournament when all matches are done
-router.post('/:id/auto-complete', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
-
-    console.log('🤖 Auto-completing tournament:', tournamentId);
-
-    // Check if user is creator
-    const [tournaments] = await db.execute(
-      `SELECT creator_id FROM tournaments WHERE id = ?`,
-      [tournamentId]
-    );
-
-    if (tournaments.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Tournament not found'
-      });
-    }
-
-    if (tournaments[0].creator_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only tournament creator can auto-complete'
-      });
-    }
-
-    // Check and complete tournament
-    const completed = await checkTournamentCompletion(tournamentId, false);
-
-    if (completed) {
-      res.json({
-        success: true,
-        message: 'Tournament auto-completed successfully!',
-        tournament_id: tournamentId
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: 'Tournament cannot be completed yet. Not all matches are finished.'
-      });
-    }
-
-  } catch (error) {
-    console.error('❌ Auto-complete tournament error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to auto-complete tournament: ' + error.message
-    });
-  }
-});
-// POST /api/tournaments/:id/cancel - Cancel tournament with refunds
-router.post('/:id/cancel', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
-
-    console.log('🚫 Canceling tournament:', { tournamentId, userId });
-
-    // Get tournament with participants
-    const [tournaments] = await db.execute(`
-      SELECT t.*, 
-             COUNT(tp.id) as participants_count
-      FROM tournaments t
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      WHERE t.id = ?
-      GROUP BY t.id
-    `, [tournamentId]);
-
-    if (tournaments.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Tournament not found'
-      });
-    }
-
-    const tournament = tournaments[0];
-
-    // Check permissions
-    if (tournament.creator_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only tournament creator can cancel tournament'
-      });
-    }
-
-    if (tournament.status === 'completed' || tournament.status === 'cancelled') {
-      return res.status(400).json({
-        success: false,
-        error: `Tournament is already ${tournament.status}`
-      });
-    }
-
-    // Get all participants to refund
-    const [participants] = await db.execute(`
-      SELECT tp.user_id, u.username, u.email
-      FROM tournament_participants tp
-      JOIN users u ON tp.user_id = u.id
-      WHERE tp.tournament_id = ? AND tp.status = 'joined'
-    `, [tournamentId]);
-
-    // Start transaction
-    await db.execute('START TRANSACTION');
-
-    try {
-      // Update tournament status
-      await db.execute(
-        `UPDATE tournaments SET status = 'cancelled', completed_at = NOW() WHERE id = ?`,
-        [tournamentId]
-      );
-
-      // Refund entry fees to all participants
-      if (tournament.entry_fee > 0) {
-        for (const participant of participants) {
-          await db.execute(`
-            UPDATE users 
-            SET balance = balance + ?
-            WHERE id = ?
-          `, [tournament.entry_fee, participant.user_id]);
-
-          // Record refund transaction
-          const reference = `TOURNAMENT-CANCEL-${Date.now()}-${tournamentId}`;
-          await db.execute(`
-            INSERT INTO transactions 
-            (user_id, amount, currency, type, status, reference, description, created_at)
-            VALUES (?, ?, 'NGN', 'refund', 'completed', ?, ?, NOW())
-          `, [
-            participant.user_id,
-            tournament.entry_fee,
-            reference,
-            `Refund for cancelled tournament: ${tournament.name}`
-          ]);
-        }
-      }
-
-      // Send notifications to all participants
-      for (const participant of participants) {
-        await db.execute(`
-          INSERT INTO notifications 
-          (user_id, message, type, status, tournament_id, created_at)
-          VALUES (?, ?, 'system', 'unread', ?, NOW())
-        `, [
-          participant.user_id,
-          `The tournament '${tournament.name}' has been cancelled by the creator. ${tournament.entry_fee > 0 ? 'Your entry fee has been refunded.' : ''}`,
-          tournamentId
-        ]);
-      }
-
-      // Record revenue reversal if platform fee was collected
-      if (tournament.platform_fee > 0) {
-        await db.execute(`
-          INSERT INTO revenue 
-          (tournament_id, amount, revenue_date, notes)
-          VALUES (?, ?, NOW(), ?)
-        `, [
-          tournamentId,
-          -tournament.platform_fee,
-          `Refunded platform fee from cancelled tournament: ${tournament.name}`
-        ]);
-      }
-
-      await db.execute('COMMIT');
-
-      console.log(`✅ Tournament ${tournamentId} cancelled successfully. Refunded ${participants.length} participants.`);
-
-      res.json({
-        success: true,
-        message: 'Tournament cancelled successfully',
-        refunds: {
-          participants: participants.length,
-          total_amount: tournament.entry_fee * participants.length,
-          entry_fee: tournament.entry_fee
-        }
-      });
-
-    } catch (error) {
-      await db.execute('ROLLBACK');
-      throw error;
-    }
-
-  } catch (error) {
-    console.error('❌ Cancel tournament error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to cancel tournament: ' + error.message
-    });
-  }
-});
 module.exports = router;

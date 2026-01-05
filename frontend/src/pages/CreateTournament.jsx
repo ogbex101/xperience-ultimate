@@ -100,11 +100,26 @@ const CreateTournament = () => {
         // Check if user is admin
         setIsAdmin(user.is_admin || false)
         
-        // Fetch user XP balance
+        // ✅ OPTION A: Use the new getUserProfile endpoint
         const userResponse = await tournamentsAPI.getUserProfile()
+        console.log('🔄 User profile response:', userResponse)
+        
         if (userResponse.success && userResponse.data) {
-          setXpBalance(userResponse.data.xp_points || 0)
+          // Handle both response structures
+          const xpBalance = userResponse.data.xp_points || 
+                           userResponse.data.user?.xp_points || 
+                           userResponse.xp_points || 
+                           0
+          setXpBalance(xpBalance)
+          console.log('✅ XP balance set to:', xpBalance)
+        } else {
+          console.warn('⚠️ Could not fetch XP, using 0')
+          setXpBalance(0)
         }
+        
+        // ✅ OPTION B: Direct XP fetch (simpler)
+        // const xpResponse = await tournamentsAPI.getUserXP()
+        // setXpBalance(xpResponse.xp_points || 0)
         
         // Fetch user's admin groups for squad tournaments
         setLoadingGroups(true)
@@ -116,6 +131,8 @@ const CreateTournament = () => {
         
       } catch (error) {
         console.error('Error fetching user data:', error)
+        // Set default XP if fetch fails
+        setXpBalance(0)
       }
     }
     

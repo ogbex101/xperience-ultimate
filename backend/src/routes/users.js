@@ -17,22 +17,40 @@ const setPinSchema = Joi.object({
   pin: Joi.string().length(4).pattern(/^\d+$/).required()
 });
 
-// Get user profile
-router.get('/profile', authenticateToken, async (req, res) => {
+// GET /api/users/profile-with-xp - Get user profile with XP
+router.get('/profile-with-xp', authenticateToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const userId = req.user.id;
     
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+    const [users] = await db.execute(
+      `SELECT id, username, email, profile_pic, rank,
+              matches_played, wins, losses, win_rate,
+              xp_points, is_admin, account_status
+       FROM users 
+       WHERE id = ?`,
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
     }
 
     res.json({
       success: true,
-      data: user
+      data: {
+        user: users[0],
+        xp_points: users[0].xp_points
+      }
     });
   } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ error: 'Failed to fetch profile' });
+    console.error('Get profile with XP error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch profile with XP' 
+    });
   }
 });
 
