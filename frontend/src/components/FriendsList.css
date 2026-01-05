@@ -1,0 +1,79 @@
+.friends-list {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.friends-list h3 {
+  margin-top: 0;
+  color: #fff;
+  margin-bottom: 20px;
+  font-size: 20px;
+}
+
+.friends-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.friend-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  transition: background 0.3s;
+}
+
+.friend-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.friend-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.friend-name {
+  color: #fff;
+  font-weight: 600;
+}
+
+.friend-status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  display: inline-block;
+  width: fit-content;
+}
+
+.friend-status.online {
+  background: rgba(72, 187, 120, 0.2);
+  color: #48bb78;
+}
+
+.friend-status.offline {
+  background: rgba(160, 174, 192, 0.2);
+  color: #a0aec0;
+}
+
+.message-btn {
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.3s;
+}
+
+.message-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}

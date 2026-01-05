@@ -1,0 +1,92 @@
+.friend-requests {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.friend-requests h3 {
+  margin-top: 0;
+  color: #fff;
+  margin-bottom: 20px;
+  font-size: 20px;
+}
+
+.no-requests {
+  color: #a0aec0;
+  text-align: center;
+  padding: 20px;
+  font-style: italic;
+}
+
+.requests-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.request-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  transition: background 0.3s;
+}
+
+.request-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.request-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.requester-name {
+  color: #fff;
+  font-weight: 600;
+}
+
+.request-time {
+  color: #a0aec0;
+  font-size: 12px;
+}
+
+.request-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.accept-btn,
+.decline-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.accept-btn {
+  background: linear-gradient(90deg, #48bb78, #38a169);
+  color: white;
+}
+
+.accept-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(72, 187, 120, 0.4);
+}
+
+.decline-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.decline-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

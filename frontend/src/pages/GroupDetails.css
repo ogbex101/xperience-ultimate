@@ -1,0 +1,419 @@
+.group-details-page {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+  color: white;
+  padding: 20px;
+}
+
+.group-details-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Back button */
+.back-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-bottom: 20px;
+  transition: background 0.3s;
+}
+
+.back-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Group Header */
+.group-header {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  padding: 25px;
+  margin-bottom: 30px;
+}
+
+.group-info h1 {
+  margin: 0 0 15px 0;
+  font-size: 32px;
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.group-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  align-items: center;
+}
+
+.game-tag {
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  color: white;
+  padding: 6px 15px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.member-count {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  padding: 6px 15px;
+  border-radius: 20px;
+  font-size: 14px;
+}
+
+.created-by {
+  color: #a0aec0;
+  font-size: 14px;
+}
+
+.group-actions {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.invite-btn,
+.chat-btn,
+.leave-btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.invite-btn {
+  background: linear-gradient(90deg, #48bb78, #38a169);
+  color: white;
+}
+
+.invite-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(72, 187, 120, 0.4);
+}
+
+.chat-btn {
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  color: white;
+}
+
+.chat-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}
+
+.leave-btn {
+  background: rgba(239, 68, 68, 0.8);
+  color: white;
+}
+
+.leave-btn:hover {
+  background: rgba(239, 68, 68, 1);
+}
+
+/* Description Section */
+.group-description-section {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  padding: 25px;
+  margin-bottom: 30px;
+}
+
+.group-description-section h3 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  color: #fff;
+  font-size: 20px;
+}
+
+.group-description-section p {
+  color: #a0aec0;
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Members Section */
+.members-section {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 15px;
+  padding: 25px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+}
+
+.section-header h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 20px;
+}
+
+.role-admin {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.role-member {
+  color: #a0aec0;
+  font-weight: 600;
+}
+
+.members-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.member-card {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background 0.3s;
+}
+
+.member-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.member-info {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.member-avatar {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.member-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.member-details h4 {
+  margin: 0 0 5px 0;
+  color: #fff;
+  font-size: 16px;
+}
+
+.member-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.member-role {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.member-role.admin {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+  color: white;
+}
+
+.member-role.member {
+  background: rgba(255, 255, 255, 0.1);
+  color: #a0aec0;
+}
+
+.member-rank {
+  color: #a0aec0;
+  font-size: 12px;
+}
+
+.remove-btn {
+  padding: 8px 16px;
+  background: rgba(239, 68, 68, 0.8);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.remove-btn:hover {
+  background: rgba(239, 68, 68, 1);
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+  padding: 30px;
+  border-radius: 15px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+}
+
+.modal-header h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 20px;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 5px;
+  transition: color 0.3s;
+}
+
+.close-btn:hover {
+  color: #764ba2;
+}
+
+.modal-body {
+  margin-bottom: 25px;
+}
+
+.modal-body p {
+  color: #a0aec0;
+  margin-bottom: 15px;
+}
+
+.invite-input {
+  width: 100%;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 16px;
+}
+
+.invite-input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 15px;
+}
+
+.cancel-btn,
+.invite-submit-btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.cancel-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.invite-submit-btn {
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  color: white;
+}
+
+.invite-submit-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}
+
+.invite-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading and Error States */
+.loading {
+  text-align: center;
+  padding: 100px;
+  color: #a0aec0;
+  font-size: 18px;
+}
+
+.error {
+  text-align: center;
+  padding: 100px;
+  color: #fc8181;
+  font-size: 18px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .group-header {
+    padding: 20px;
+  }
+  
+  .group-info h1 {
+    font-size: 24px;
+  }
+  
+  .group-actions {
+    flex-direction: column;
+  }
+  
+  .members-list {
+    grid-template-columns: 1fr;
+  }
+  
+  .modal-content {
+    padding: 20px;
+  }
+}

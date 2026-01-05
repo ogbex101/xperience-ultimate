@@ -1,0 +1,1522 @@
+here is my TournamentDetails.jsx
+import React, { useState, useEffect } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { tournamentsAPI } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
+import { 
+  Trophy, Users, Calendar, DollarSign, ArrowLeft, 
+  Clock, User, Award, Swords, AlertCircle, Loader 
+} from 'lucide-react'
+
+const TournamentDetails = () => {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const { user } = useAuth()
+  
+  const [tournament, setTournament] = useState(null)
+  const [participants, setParticipants] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [joining, setJoining] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [apiError, setApiError] = useState('') // Separate error for API issues
+
+  useEffect(() => {
+    fetchTournamentDetails()
+  }, [id])
+
+  const fetchTournamentDetails = async () => {
+  try {
+    setLoading(true)
+    setError('')
+    setApiError('')
+    
+    console.log('🔍 Fetching tournament ID:', id)
+    
+    // Direct API call for debugging
+    const token = localStorage.getItem('token')
+    console.log('📝 Token exists:', !!token)
+    
+    // Test direct fetch first
+    const testResponse = await fetch(`http://localhost:5000/api/tournaments/${id}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    
+    console.log('📊 Test response status:', testResponse.status)
+    
+    if (!testResponse.ok) {
+      throw new Error(`HTTP ${testResponse.status}: ${testResponse.statusText}`)
+    }
+    
+    const testData = await testResponse.json()
+    console.log('✅ Direct fetch success:', testData)
+    
+    // Now use the API function
+    const data = await tournamentsAPI.getById(id)
+    console.log('✅ API function success:', data)
+    
+    if (data && data.success) {
+      setTournament(data.tournament)
+      setParticipants(data.participants || [])
+      console.log('✅ Tournament set:', data.tournament?.name)
+      console.log('✅ Participants set:', data.participants?.length || 0)
+    } else {
+      setError(data?.error || 'Failed to load tournament details')
+      console.error('❌ API returned error:', data?.error)
+    }
+  } catch (err) {
+    console.error('❌ Fetch error details:', {
+      message: err.message,
+      stack: err.stack,
+      response: err.response?.data
+    })
+    
+    setApiError(err.message || 'Failed to load tournament details')
+  } finally {
+    setLoading(false)
+    console.log('✅ Loading set to false')
+  }
+}
+  const handleJoinTournament = async () => {
+    if (!user) {
+      navigate('/login')
+      return
+    }
+
+    try {
+      setJoining(true)
+      setError('')
+      
+      const result = await tournamentsAPI.join(id)
+      
+      if (result.success) {
+        setSuccess('Successfully joined tournament!')
+        // Refresh tournament details
+        fetchTournamentDetails()
+      } else {
+        setError(result.error || 'Failed to join tournament')
+      }
+    } catch (err) {
+      console.error('Join error:', err)
+      setError(err.response?.data?.error || 'Failed to join tournament')
+    } finally {
+      setJoining(false)
+    }
+  }
+
+  const isUserParticipant = () => {
+    return participants.some(p => p.user_id === user?.id)
+  }
+
+  const isTournamentFull = () => {
+    return participants.length >= (tournament?.max_players || 0)
+  }
+
+  const canJoinTournament = () => {
+    return user && 
+           !isUserParticipant() && 
+           !isTournamentFull() && 
+           tournament?.status === 'upcoming'
+  }
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'Not scheduled'
+    try {
+      return new Date(dateString).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch {
+      return 'Invalid date'
+    }
+  }
+
+  const getStatusBadge = (status) => {
+    const statusConfig = {
+      upcoming: { color: 'bg-blue-500/20 text-blue-400 border-blue-500/30', label: 'Upcoming' },
+      ongoing: { color: 'bg-green-500/20 text-green-400 border-green-500/30', label: 'Ongoing' },
+      completed: { color: 'bg-gray-500/20 text-gray-400 border-gray-500/30', label: 'Completed' },
+      cancelled: { color: 'bg-red-500/20 text-red-400 border-red-500/30', label: 'Cancelled' }
+    }
+    
+    const config = statusConfig[status] || statusConfig.upcoming
+    return (
+      <span className={`px-3 py-1 rounded-full text-sm font-medium border ${config.color}`}>
+        {config.label}
+      </span>
+    )
+  }
+
+  // Handle loading state with better UI
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <h3 className="text-xl font-semibold text-white mb-2">Loading Tournament...</h3>
+          <p className="text-gray-400">Fetching tournament details</p>
+          <p className="text-gray-500 text-sm mt-2">Tournament ID: {id}</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Handle API errors
+  if (apiError) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center max-w-md p-6">
+          <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
+          <h3 className="text-xl font-semibold text-white mb-2">Error Loading Tournament</h3>
+          <p className="text-gray-400 mb-4">{apiError}</p>
+          <div className="space-y-3">
+            <button
+              onClick={fetchTournamentDetails}
+              className="btn-primary w-full"
+            >
+              <Loader className="w-4 h-4 inline mr-2 animate-spin" />
+              Retry Loading
+            </button>
+            <button
+              onClick={() => navigate('/tournaments')}
+              className="btn-secondary w-full"
+            >
+              Back to Tournaments
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Handle tournament not found
+  if (!tournament && !loading && !apiError) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
+          <h3 className="text-xl font-semibold text-white mb-2">Tournament Not Found</h3>
+          <p className="text-gray-400 mb-6">The tournament you're looking for doesn't exist.</p>
+          <Link to="/tournaments" className="btn-primary">
+            Back to Tournaments
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  // Handle case where tournament is null
+  if (!tournament) {
+    return null
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-900 py-8">
+      <div className="container mx-auto px-4 max-w-4xl">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => navigate('/tournaments')}
+              className="flex items-center space-x-2 text-gray-400 hover:text-white transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5" />
+              <span>Back to Tournaments</span>
+            </button>
+          </div>
+          {getStatusBadge(tournament.status)}
+        </div>
+
+        {/* Error/Success Messages */}
+        {error && (
+          <div className="bg-red-500/10 border border-red-500 text-red-400 px-4 py-3 rounded-lg mb-6">
+            {error}
+          </div>
+        )}
+        
+        {success && (
+          <div className="bg-green-500/10 border border-green-500 text-green-400 px-4 py-3 rounded-lg mb-6">
+            {success}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Main Tournament Info */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Tournament Card */}
+            <div className="card">
+              <div className="flex items-start justify-between mb-6">
+                <div>
+                  <h1 className="text-3xl font-bold text-white mb-2">
+                    {tournament.name || 'Unnamed Tournament'}
+                  </h1>
+                  <p className="text-gray-400 text-lg">{tournament.game || 'Unknown Game'}</p>
+                </div>
+                <div className="w-16 h-16 bg-purple-gradient rounded-lg flex items-center justify-center">
+                  <Trophy className="w-8 h-8 text-white" />
+                </div>
+              </div>
+
+              {tournament.description && (
+                <div className="mb-6">
+                  <p className="text-gray-300">{tournament.description}</p>
+                </div>
+              )}
+
+              {/* Tournament Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 py-6 border-y border-gray-700">
+                <div className="text-center">
+                  <div className="flex items-center justify-center space-x-2 text-gray-400 mb-1">
+                    <Users className="w-4 h-4" />
+                    <span className="text-sm">Players</span>
+                  </div>
+                  <div className="text-white font-semibold">
+                    {participants.length}/{tournament.max_players || 0}
+                  </div>
+                </div>
+
+                <div className="text-center">
+                  <div className="flex items-center justify-center space-x-2 text-gray-400 mb-1">
+                    <DollarSign className="w-4 h-4" />
+                    <span className="text-sm">Prize Pool</span>
+                  </div>
+                  <div className="text-green-400 font-semibold">
+                    ₦{(tournament.prize_pool || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="text-center">
+                  <div className="flex items-center justify-center space-x-2 text-gray-400 mb-1">
+                    <Calendar className="w-4 h-4" />
+                    <span className="text-sm">Starts</span>
+                  </div>
+                  <div className="text-white text-sm">
+                    {formatDate(tournament.start_date)}
+                  </div>
+                </div>
+
+                <div className="text-center">
+                  <div className="flex items-center justify-center space-x-2 text-gray-400 mb-1">
+                    <Swords className="w-4 h-4" />
+                    <span className="text-sm">Type</span>
+                  </div>
+                  <div className="text-white text-sm capitalize">
+                    {(tournament.type || 'versus').replace('onevsone', '1 vs 1')}
+                  </div>
+                </div>
+              </div>
+
+              {/* Entry Fee & Join Button */}
+              <div className="flex justify-between items-center pt-6">
+                <div>
+                  <span className="text-gray-400">Entry Fee: </span>
+                  <span className="text-white font-semibold text-lg">
+                    ₦{(tournament.entry_fee || 0).toLocaleString() || 'Free'}
+                  </span>
+                </div>
+                
+                {canJoinTournament() && (
+                  <button
+                    onClick={handleJoinTournament}
+                    disabled={joining}
+                    className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {joining ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                        Joining...
+                      </>
+                    ) : (
+                      'Join Tournament'
+                    )}
+                  </button>
+                )}
+
+                {isUserParticipant() && (
+                  <div className="bg-green-500/20 text-green-400 px-4 py-2 rounded-lg">
+                    Already Joined ✓
+                  </div>
+                )}
+
+                {isTournamentFull() && (
+                  <div className="bg-red-500/20 text-red-400 px-4 py-2 rounded-lg">
+                    Tournament Full
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Participants Section */}
+            <div className="card">
+              <h2 className="text-xl font-semibold text-white mb-4 flex items-center space-x-2">
+                <Users className="w-5 h-5" />
+                <span>Participants ({participants.length})</span>
+              </h2>
+              
+              {participants.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">
+                  <User className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>No participants yet. Be the first to join!</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {participants.map((participant, index) => (
+                    <div key={participant.user_id || index} className="flex items-center justify-between p-3 bg-gray-800 rounded-lg">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center text-sm font-semibold">
+                          {index + 1}
+                        </div>
+                        <span className="text-white">{participant.username || `Player ${index + 1}`}</span>
+                      </div>
+                      {participant.user_id === tournament.creator_id && (
+                        <span className="text-xs bg-purple-500/20 text-purple-400 px-2 py-1 rounded">
+                          Creator
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Sidebar */}
+          <div className="space-y-6">
+            {/* Tournament Info */}
+            <div className="card">
+              <h3 className="text-lg font-semibold text-white mb-4 flex items-center space-x-2">
+                <Award className="w-5 h-5" />
+                <span>Tournament Info</span>
+              </h3>
+              
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Created by:</span>
+                  <span className="text-white">{tournament.creator_name || 'Unknown'}</span>
+                </div>
+                
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Platform Fee:</span>
+                  <span className="text-yellow-400">
+                    ₦{(tournament.platform_fee || 0).toLocaleString()}
+                  </span>
+                </div>
+                
+                {tournament.prize_pool_option && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Prize Type:</span>
+                    <span className="text-white capitalize">
+                      {(tournament.prize_pool_option || '').replace('_', ' ')}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Tournament Rules */}
+            <div className="card">
+              <h3 className="text-lg font-semibold text-white mb-4">Tournament Rules</h3>
+              <ul className="space-y-2 text-sm text-gray-300">
+                <li>• Must have stable internet connection</li>
+                <li>• No cheating or unfair advantages</li>
+                <li>• Be respectful to other players</li>
+                <li>• Follow the game's official rules</li>
+                <li>• Tournament admin decisions are final</li>
+              </ul>
+            </div>
+
+            {/* Only show bracket for 1v1 tournaments */}
+            {tournament.type === 'onevsone' && (
+              <div className="card">
+                <h3 className="text-lg font-semibold text-white mb-4">Tournament Bracket</h3>
+                <div className="text-center py-8 text-gray-400">
+                  <Swords className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>Bracket will be generated when tournament starts</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default TournamentDetails
+
+i dont have any of this two
+TournamentBracket.jsx
+TournamentParticipantList.jsx
+
+here is my backend/src/routes/tournament.js
+const express = require('express');
+const router = express.Router();
+const db = require('../config/database');
+const jwt = require('jsonwebtoken'); // ADD THIS IMPORT
+
+// Simple auth middleware
+const authenticate = (req, res, next) => {
+  const authHeader = req.header('Authorization');
+  
+  if (!authHeader) {
+    return res.status(401).json({ success: false, error: 'No authorization header' });
+  }
+  
+  const token = authHeader.replace('Bearer ', '').trim();
+  
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'No token provided' });
+  }
+  
+  try {
+    console.log('🔑 Verifying token:', token.substring(0, 20) + '...');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    console.log('✅ Token decoded:', decoded);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    console.error('❌ Token verification error:', error.message);
+    res.status(401).json({ success: false, error: 'Invalid token' });
+  }
+};
+// SPECIFIC ROUTES FIRST
+// GET /api/tournaments/my-tournaments - Get user's tournaments
+router.get('/my-tournaments', authenticate, async (req, res) => {
+  try {
+    const [tournaments] = await db.execute(`
+      SELECT t.*, u.username as creator_name,
+             COUNT(tp.id) as current_players
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.creator_id = ? OR tp.user_id = ?
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+    `, [req.user.id, req.user.id]);
+
+    res.json({
+      success: true,
+      tournaments: tournaments || []
+    });
+  } catch (error) {
+    console.error('Error fetching user tournaments:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Server error fetching tournaments' 
+    });
+  }
+});
+// Add this route BEFORE your /:id route for debugging
+router.get('/debug/:id', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    console.log('🧪 Debug fetching tournament:', tournamentId);
+    
+    // Test 1: Simple query
+    const [simpleTest] = await db.execute(
+      'SELECT id, name FROM tournaments WHERE id = ?',
+      [tournamentId]
+    );
+    console.log('🧪 Simple test result:', simpleTest);
+    
+    // Test 2: Check participants
+    const [participantsTest] = await db.execute(
+      'SELECT * FROM tournament_participants WHERE tournament_id = ?',
+      [tournamentId]
+    );
+    console.log('🧪 Participants test:', participantsTest);
+    
+    res.json({
+      success: true,
+      simple: simpleTest,
+      participants: participantsTest
+    });
+  } catch (error) {
+    console.error('🧪 Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/tournaments/:id - Get tournament by ID
+router.get('/:id', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    
+    console.log('🚀 Fetching tournament ID:', tournamentId);
+
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT t.*, 
+             u.username as creator_name,
+             u.profile_pic as creator_avatar,
+             (SELECT COUNT(*) FROM tournament_participants tp 
+              WHERE tp.tournament_id = t.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      WHERE t.id = ?
+    `, [tournamentId]);
+
+    console.log('✅ Tournaments found:', tournaments.length);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Tournament not found' 
+      });
+    }
+
+    // Get participants
+    const [participants] = await db.execute(`
+      SELECT tp.user_id, u.username, u.rank, u.profile_pic
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      WHERE tp.tournament_id = ?
+      ORDER BY tp.created_at ASC
+    `, [tournamentId]);
+
+    console.log('✅ Participants found:', participants.length);
+
+    // Combine data - FIXED THE TYPO HERE
+    const tournamentData = {
+      ...tournaments[0],
+      participants_count: tournaments[0].participants_count || 0  // FIX: tournaments[0] not tournament[0]
+    };
+
+    res.json({
+      success: true,
+      tournament: tournamentData,
+      participants: participants || []
+    });
+
+  } catch (error) {
+    console.error('❌ Database error fetching tournament:', error);
+    console.error('❌ Full error details:', error.stack);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Database error: ' + error.message 
+    });
+  }
+});
+
+// POST /api/tournaments/:id/join - Join tournament
+router.post('/:id/join', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.userId || req.user.id; // FIX: Use userId from token
+
+    console.log('👤 Join request:', {
+      tournamentId,
+      userId,
+      userFromToken: req.user
+    });
+
+    // Check if tournament exists and has space
+    const [tournaments] = await db.execute(
+      `SELECT t.*, 
+       COUNT(tp.id) as current_players,
+       (SELECT COUNT(*) FROM tournament_participants tp2 
+        WHERE tp2.tournament_id = t.id AND tp2.status = 'joined') as participants_count
+       FROM tournaments t
+       LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+         AND tp.status = 'joined'
+       WHERE t.id = ?
+       GROUP BY t.id`,
+      [tournamentId]
+    );
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Tournament not found' 
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    console.log('📊 Tournament details:', {
+      name: tournament.name,
+      status: tournament.status,
+      maxPlayers: tournament.max_players,
+      currentPlayers: tournament.participants_count,
+      entryFee: tournament.entry_fee
+    });
+
+    // Check if tournament is joinable
+    if (tournament.status !== 'upcoming') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Tournament is not accepting new participants' 
+      });
+    }
+
+    // Check if tournament is full
+    if (tournament.participants_count >= tournament.max_players) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Tournament is full' 
+      });
+    }
+
+    // Check if user already joined
+    const [existing] = await db.execute(
+      `SELECT * FROM tournament_participants 
+       WHERE tournament_id = ? AND user_id = ?`,
+      [tournamentId, userId]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'You have already joined this tournament' 
+      });
+    }
+
+    // Handle entry fee deduction if applicable
+    if (tournament.entry_fee > 0) {
+      const [user] = await db.execute(
+        `SELECT id, username, balance FROM users WHERE id = ?`,
+        [userId]
+      );
+
+      if (user.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'User not found' 
+        });
+      }
+
+      const userBalance = parseFloat(user[0].balance);
+      console.log('💰 Balance check:', {
+        userId,
+        username: user[0].username,
+        balance: userBalance,
+        entryFee: tournament.entry_fee
+      });
+
+      if (userBalance < tournament.entry_fee) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `Insufficient balance. You need ₦${tournament.entry_fee.toLocaleString()}, you have ₦${userBalance.toLocaleString()}` 
+        });
+      }
+
+      // Deduct entry fee
+      const newBalance = userBalance - tournament.entry_fee;
+      await db.execute(
+        `UPDATE users SET balance = ? WHERE id = ?`,
+        [newBalance, userId]
+      );
+
+      // Record transaction
+      const reference = `TOURNAMENT-ENTRY-${Date.now()}-${tournamentId}`;
+      await db.execute(
+        `INSERT INTO transactions (user_id, amount, currency, type, status, reference, description)
+         VALUES (?, ?, 'NGN', 'tournament_entry', 'completed', ?, ?)`,
+        [
+          userId, 
+          -tournament.entry_fee,
+          reference,
+          `Tournament entry fee: ${tournament.name}`
+        ]
+      );
+
+      console.log('✅ Entry fee deducted:', {
+        userId,
+        oldBalance: userBalance,
+        newBalance,
+        reference
+      });
+    }
+
+    // Add participant
+    await db.execute(
+      `INSERT INTO tournament_participants (tournament_id, user_id, status, created_at)
+       VALUES (?, ?, 'joined', NOW())`,
+      [tournamentId, userId]
+    );
+
+    console.log('✅ User added to participants:', { userId, tournamentId });
+
+    // Send notification to tournament creator
+    const [creator] = await db.execute(
+      `SELECT id FROM users WHERE id = ?`,
+      [tournament.creator_id]
+    );
+
+    if (creator.length > 0) {
+      const [currentUser] = await db.execute(
+        `SELECT username FROM users WHERE id = ?`,
+        [userId]
+      );
+
+      const username = currentUser[0]?.username || 'A player';
+
+      await db.execute(
+        `INSERT INTO notifications (user_id, sender_id, message, type, status, tournament_id, created_at)
+         VALUES (?, ?, ?, 'system', 'unread', ?, NOW())`,
+        [
+          tournament.creator_id,
+          userId,
+          `${username} has joined your tournament '${tournament.name}'`,
+          tournamentId
+        ]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Successfully joined tournament!',
+      tournament: {
+        id: tournament.id,
+        name: tournament.name,
+        current_participants: tournament.participants_count + 1,
+        max_players: tournament.max_players
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Join tournament error:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// GENERIC ROUTES LAST
+// GET /api/tournaments - Get all tournaments
+router.get('/', async (req, res) => {
+  try {
+    const [tournaments] = await db.execute(`
+      SELECT t.*, u.username as creator_name, 
+             COUNT(tp.id) as current_players
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.status != 'cancelled'
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      tournaments: tournaments || []
+    });
+  } catch (error) {
+    console.error('Error fetching tournaments:', error);
+    res.status(500).json({ success: false, error: 'Server error fetching tournaments' });
+  }
+});
+
+// POST /api/tournaments - Create tournament
+router.post('/', async (req, res) => {
+  try {
+    const {
+      name,
+      game,
+      description,
+      max_players,
+      entry_fee,
+      prize_pool_option,
+      custom_prize_pool,
+      type,
+      start_date
+    } = req.body;
+
+    console.log('Received tournament data:', req.body); // DEBUG
+
+    // Validation with proper defaults
+    if (!name || !game || !max_players || !type || !start_date) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields' 
+      });
+    }
+
+    // Set proper defaults to avoid undefined
+    const safeDescription = description || null;
+    const safeEntryFee = parseFloat(entry_fee) || 0;
+    const safeMaxPlayers = parseInt(max_players) || 8;
+    const safeCustomPrizePool = parseFloat(custom_prize_pool) || 0;
+    
+    // TEMPORARY FIX - Use your actual user ID
+    const creator_id = 4; // Change this to your user ID from database
+
+    // Calculate prize pool with safe values
+    let prize_pool = 0;
+    let platform_fee = 0;
+
+    if (prize_pool_option === 'entry_fee') {
+      prize_pool = (safeEntryFee * safeMaxPlayers) * 0.85;
+      platform_fee = (safeEntryFee * safeMaxPlayers) * 0.15;
+    } else {
+      prize_pool = safeCustomPrizePool * 0.85;
+      platform_fee = safeCustomPrizePool * 0.15;
+    }
+
+    // Ensure no undefined values
+    const insertData = [
+      name, 
+      game, 
+      safeDescription, 
+      creator_id, 
+      safeMaxPlayers, 
+      safeEntryFee,
+      prize_pool, 
+      safeCustomPrizePool, 
+      platform_fee, 
+      start_date, 
+      type,
+      prize_pool_option
+    ];
+
+    console.log('Insert data:', insertData); // DEBUG
+
+    // Insert into database
+    const [result] = await db.execute(
+      `INSERT INTO tournaments (
+        name, game, description, creator_id, max_players, entry_fee,
+        prize_pool, custom_prize_pool, platform_fee, start_date, status, type,
+        prize_pool_option
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?, ?)`,
+      insertData
+    );
+
+    console.log('Tournament created with ID:', result.insertId); // DEBUG
+
+    res.json({
+      success: true,
+      tournamentId: result.insertId,
+      message: 'Tournament created successfully'
+    });
+
+  } catch (error) {
+    console.error('Database execute error:', error);
+    console.error('Error creating tournament:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Server error creating tournament: ' + error.message 
+    });
+  }
+});
+// GET /api/tournaments/debug/all - Debug route to see all tournaments
+router.get('/debug/all', async (req, res) => {
+  try {
+    const [tournaments] = await db.execute(`
+      SELECT id, name, creator_id, status, created_at 
+      FROM tournaments 
+      ORDER BY id DESC
+    `);
+    
+    res.json({
+      success: true,
+      tournaments: tournaments,
+      total: tournaments.length
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Debug error: ' + error.message 
+    });
+  }
+});
+
+module.exports = router;
+
+but so far so good i havent created any bracket generation logic or any of that stuff
+so secondly to answer those your questions i dont yet know yet because have not yet gotten a tournament to be complete yet so i dont know yet its still testing phase
+for the autostart a tournament when a tournament reaches max players dont really know about this but its something ill like to add to this
+bracket are generated based on stackin winnere to play against each other then for the last two they fight for who will be the final winner of the tournament
+
+ok for the 1vs1tournament this is the tournament type that uses the bracket generation
+for the free for all its an individual type tournament whereby everyone are on their own so depending on the criteria the creator set when creating the tournament that is what is used to judge and crown the winner the same for the survival of the fittest tournament it can only be created by xp admins squad you need a squad to compete in this tournament and its only the admin or the creator of a squad that can join a squad tournament 
+
+and also each tournament type should have their winning criteria 
+this are the target for the tournament and should be set while creating the tournament
+
+here is my Tournament.jsx
+import React, { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
+import { Trophy, Users, Calendar, DollarSign, Plus } from 'lucide-react'
+import { tournamentsAPI } from '../utils/api'
+
+const Tournaments = () => {
+  const [tournaments, setTournaments] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    fetchTournaments()
+  }, [])
+
+  const fetchTournaments = async () => {
+    try {
+      setLoading(true)
+      const data = await tournamentsAPI.getAll()
+      setTournaments(data.tournaments || [])
+    } catch (err) {
+      setError('Failed to load tournaments')
+      console.error('Error fetching tournaments:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const formatDate = (dateString) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'upcoming': return 'text-blue-400'
+      case 'ongoing': return 'text-green-400'
+      case 'completed': return 'text-gray-400'
+      default: return 'text-gray-400'
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-400">Loading tournaments...</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-900 py-8">
+      <div className="container mx-auto px-4">
+        {/* Header */}
+        <div className="flex justify-between items-center mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-white">Tournaments</h1>
+            <p className="text-gray-400">Compete and win amazing prizes</p>
+          </div>
+          <Link
+            to="/tournaments/create"
+            className="btn-primary flex items-center space-x-2"
+          >
+            <Plus className="w-5 h-5" />
+            <span>Create Tournament</span>
+          </Link>
+        </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="bg-red-500/10 border border-red-500 text-red-400 px-4 py-3 rounded-lg mb-6">
+            {error}
+          </div>
+        )}
+
+        {/* Tournaments Grid */}
+        {tournaments.length === 0 ? (
+          <div className="card text-center py-12">
+            <Trophy className="w-16 h-16 text-gray-600 mx-auto mb-4" />
+            <h3 className="text-xl font-semibold text-white mb-2">No Tournaments Yet</h3>
+            <p className="text-gray-400 mb-6">Be the first to create an amazing tournament!</p>
+            <Link to="/tournaments/create" className="btn-primary">
+              Create First Tournament
+            </Link>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {tournaments.map((tournament) => (
+              <div key={tournament.id} className="card hover:transform hover:scale-105 transition-all duration-300">
+                {/* Tournament Header */}
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-white truncate">
+                      {tournament.name}
+                    </h3>
+                    <p className="text-gray-400 text-sm">{tournament.game}</p>
+                  </div>
+                  <span className={`text-sm font-medium ${getStatusColor(tournament.status)}`}>
+                    {tournament.status?.charAt(0).toUpperCase() + tournament.status?.slice(1)}
+                  </span>
+                </div>
+
+                {/* Tournament Details */}
+                <div className="space-y-3 mb-4">
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center space-x-2 text-gray-400">
+                      <Users className="w-4 h-4" />
+                      <span>Players</span>
+                    </div>
+                    <span className="text-white">
+                      {tournament.current_players || 0}/{tournament.max_players}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center space-x-2 text-gray-400">
+                      <DollarSign className="w-4 h-4" />
+                      <span>Prize Pool</span>
+                    </div>
+                    <span className="text-green-400 font-semibold">
+                      ₦{tournament.prize_pool?.toLocaleString() || '0'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center space-x-2 text-gray-400">
+                      <Calendar className="w-4 h-4" />
+                      <span>Starts</span>
+                    </div>
+                    <span className="text-white text-xs">
+                      {formatDate(tournament.start_date)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Entry Fee & Action */}
+                <div className="flex justify-between items-center pt-4 border-t border-gray-700">
+                  <div>
+                    <span className="text-sm text-gray-400">Entry: </span>
+                    <span className="text-white font-semibold">
+                      ₦{tournament.entry_fee?.toLocaleString() || 'Free'}
+                    </span>
+                  </div>
+                 <Link
+  to={`/tournaments/${tournament.id}`}
+  className="btn-secondary text-sm px-4 py-2"
+>
+  View Details
+</Link>
+                </div>
+
+                {/* Creator Info */}
+                {tournament.creator_name && (
+                  <div className="text-xs text-gray-500 mt-3 pt-3 border-t border-gray-800">
+                    Created by: {tournament.creator_name}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default Tournaments
+
+here is my CreateTournament.jsx
+import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
+import { tournamentsAPI } from '../utils/api'
+import { Trophy, Gamepad2, Users, Calendar, DollarSign, ArrowLeft } from 'lucide-react'
+
+const CreateTournament = () => {
+  const [formData, setFormData] = useState({
+    name: '',
+    game: 'Call of Duty: Warzone',
+    description: '',
+    max_players: 8,
+    entry_fee: 0,
+    prize_pool_option: 'entry_fee',
+    custom_prize_pool: 0,
+    type: 'onevsone',
+    start_date: ''
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const { user } = useAuth()
+  const navigate = useNavigate()
+
+  const games = [
+    'Call of Duty: Warzone',
+    'Call of Duty: Mobile',
+    'PUBG Mobile',
+    'Free Fire',
+    'Fortnite',
+    'Valorant',
+    'Dota 2',
+    'FIFA 23',
+    'Other'
+  ]
+
+  const tournamentTypes = [
+    { value: 'onevsone', label: '1 vs 1', description: 'Head-to-head matches' },
+    { value: 'freeforall', label: 'Free for All', description: 'Everyone competes individually' },
+    { value: 'squad', label: 'Squad Tournament', description: 'Team-based competition' },
+    { value: 'survival', label: 'Survival', description: 'Last player standing wins' }
+  ]
+
+  const handleChange = (e) => {
+    const { name, value, type } = e.target
+    setFormData(prev => ({
+      ...prev,
+      [name]: type === 'number' ? parseFloat(value) || 0 : value
+    }))
+    setError('')
+  }
+
+  const calculatePrizePool = () => {
+    if (formData.prize_pool_option === 'entry_fee') {
+      return formData.entry_fee * formData.max_players * 0.85
+    } else {
+      return formData.custom_prize_pool * 0.85
+    }
+  }
+
+  const calculatePlatformFee = () => {
+    if (formData.prize_pool_option === 'entry_fee') {
+      return formData.entry_fee * formData.max_players * 0.15
+    } else {
+      return formData.custom_prize_pool * 0.15
+    }
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+
+    // Validation
+    if (!formData.name.trim()) {
+      setError('Tournament name is required')
+      setLoading(false)
+      return
+    }
+
+    if (!formData.start_date) {
+      setError('Start date is required')
+      setLoading(false)
+      return
+    }
+
+    if (formData.prize_pool_option === 'custom' && formData.custom_prize_pool <= 0) {
+      setError('Custom prize pool must be greater than 0')
+      setLoading(false)
+      return
+    }
+
+    try {
+      const response = await tournamentsAPI.create(formData)
+      
+      // To this:
+if (response.data.success) {
+  alert('Tournament created successfully!');
+  navigate('/tournaments');
+}
+    } catch (error) {
+      setError(error.response?.data?.error || 'Failed to create tournament')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const minDate = new Date()
+  minDate.setHours(minDate.getHours() + 1) // At least 1 hour from now
+
+  return (
+    <div className="min-h-screen bg-gray-900 py-8">
+      <div className="container mx-auto px-4 max-w-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => navigate('/tournaments')}
+              className="flex items-center space-x-2 text-gray-400 hover:text-white transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5" />
+              <span>Back</span>
+            </button>
+            <div>
+              <h1 className="text-3xl font-bold text-white">Create Tournament</h1>
+              <p className="text-gray-400">Set up your competitive gaming tournament</p>
+            </div>
+          </div>
+          
+          <div className="w-12 h-12 bg-purple-gradient rounded-lg flex items-center justify-center">
+            <Trophy className="w-6 h-6 text-white" />
+          </div>
+        </div>
+
+        {/* Creation Form */}
+        <form onSubmit={handleSubmit} className="card space-y-6">
+          {error && (
+            <div className="bg-red-500/10 border border-red-500 text-red-400 px-4 py-3 rounded-lg">
+              {error}
+            </div>
+          )}
+
+          {/* Basic Information */}
+          <div>
+            <h2 className="text-xl font-semibold text-white mb-4 flex items-center space-x-2">
+              <Gamepad2 className="w-5 h-5" />
+              <span>Basic Information</span>
+            </h2>
+            
+            <div className="space-y-4">
+              {/* Tournament Name */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Tournament Name *
+                </label>
+                <input
+                  type="text"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleChange}
+                  required
+                  className="input-primary w-full"
+                  placeholder="Enter tournament name"
+                  maxLength="100"
+                />
+              </div>
+
+              {/* Game Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Game *
+                </label>
+                <select
+                  name="game"
+                  value={formData.game}
+                  onChange={handleChange}
+                  className="input-primary w-full"
+                >
+                  {games.map(game => (
+                    <option key={game} value={game}>{game}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Description
+                </label>
+                <textarea
+                  name="description"
+                  value={formData.description}
+                  onChange={handleChange}
+                  rows="3"
+                  className="input-primary w-full resize-none"
+                  placeholder="Describe your tournament rules, requirements, etc."
+                  maxLength="500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Tournament Settings */}
+          <div>
+            <h2 className="text-xl font-semibold text-white mb-4 flex items-center space-x-2">
+              <Users className="w-5 h-5" />
+              <span>Tournament Settings</span>
+            </h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Max Players */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Max Players *
+                </label>
+                <input
+                  type="number"
+                  name="max_players"
+                  value={formData.max_players}
+                  onChange={handleChange}
+                  min="2"
+                  max="100"
+                  required
+                  className="input-primary w-full"
+                />
+              </div>
+
+              {/* Tournament Type */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Tournament Type *
+                </label>
+                <select
+                  name="type"
+                  value={formData.type}
+                  onChange={handleChange}
+                  className="input-primary w-full"
+                >
+                  {tournamentTypes.map(type => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-1">
+                  {tournamentTypes.find(t => t.value === formData.type)?.description}
+                </p>
+              </div>
+
+              {/* Start Date */}
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Start Date & Time *
+                </label>
+                <input
+                  type="datetime-local"
+                  name="start_date"
+                  value={formData.start_date}
+                  onChange={handleChange}
+                  min={minDate.toISOString().slice(0, 16)}
+                  required
+                  className="input-primary w-full"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Prize Pool Settings */}
+          <div>
+            <h2 className="text-xl font-semibold text-white mb-4 flex items-center space-x-2">
+              <DollarSign className="w-5 h-5" />
+              <span>Prize Pool Settings</span>
+            </h2>
+            
+            <div className="space-y-4">
+              {/* Entry Fee */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Entry Fee (₦)
+                </label>
+                <input
+                  type="number"
+                  name="entry_fee"
+                  value={formData.entry_fee}
+                  onChange={handleChange}
+                  min="0"
+                  step="100"
+                  className="input-primary w-full"
+                  placeholder="0 for free tournament"
+                />
+              </div>
+
+              {/* Prize Pool Option */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Prize Pool Type
+                </label>
+                <div className="flex space-x-4">
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      name="prize_pool_option"
+                      value="entry_fee"
+                      checked={formData.prize_pool_option === 'entry_fee'}
+                      onChange={handleChange}
+                      className="text-purple-500 focus:ring-purple-500"
+                    />
+                    <span className="text-gray-300">Use Entry Fees as Prize Pool</span>
+                  </label>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      name="prize_pool_option"
+                      value="custom"
+                      checked={formData.prize_pool_option === 'custom'}
+                      onChange={handleChange}
+                      className="text-purple-500 focus:ring-purple-500"
+                    />
+                    <span className="text-gray-300">Custom Prize Pool</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Custom Prize Pool */}
+              {formData.prize_pool_option === 'custom' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Custom Prize Pool (₦) *
+                  </label>
+                  <input
+                    type="number"
+                    name="custom_prize_pool"
+                    value={formData.custom_prize_pool}
+                    onChange={handleChange}
+                    min="0"
+                    step="100"
+                    required
+                    className="input-primary w-full"
+                    placeholder="Enter custom prize pool amount"
+                  />
+                </div>
+              )}
+
+              {/* Prize Pool Summary */}
+              <div className="bg-gray-800 rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-white">Prize Pool Summary</h4>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Total Prize Pool:</span>
+                  <span className="text-green-400 font-semibold">
+                    ₦{calculatePrizePool().toLocaleString()}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Platform Fee (15%):</span>
+                  <span className="text-yellow-400">
+                    ₦{calculatePlatformFee().toLocaleString()}
+                  </span>
+                </div>
+                {formData.prize_pool_option === 'entry_fee' && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Total Entry Fees:</span>
+                    <span className="text-blue-400">
+                      ₦{(formData.entry_fee * formData.max_players).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <div className="flex space-x-4 pt-4">
+            <button
+              type="button"
+              onClick={() => navigate('/tournaments')}
+              className="flex-1 btn-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto"></div>
+              ) : (
+                'Create Tournament'
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+export default CreateTournament
+if there is anyother file you need let me know
+

@@ -1,0 +1,15 @@
+<html><head><title>Auth Debug</title></head><body><h1>Auth Debugger</h1><div id="output"></div><script> 
+const output = document.getElementById('output'); 
+const addLine = (text) = += '<p>' + text + '</p>'; 
+addLine('=== LOCAL STORAGE ==='); 
+addLine('token: ' + localStorage.getItem('token')); 
+addLine('authToken: ' + localStorage.getItem('authToken')); 
+addLine('userData: ' + localStorage.getItem('userData')); 
+addLine(''); 
+addLine('=== COOKIES ==='); 
+addLine('Cookies: ' + document.cookie); 
+addLine(''); 
+addLine('=== API REQUESTS ==='); 
+fetch('http://localhost:5000/api/auth/profile', { 
+}).then(r = API: ' + JSON.stringify(d))).catch(e = API Error: ' + e)); 
+</script></body></html> 

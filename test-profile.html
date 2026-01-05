@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Test Profile Endpoint</h2>
+  <button onclick="testProfile()">Test Profile API</button>
+  <div id="result"></div>
+
+  <script>
+    async function testProfile() {
+      const token = prompt('Enter your JWT token (check localStorage):');
+      
+      try {
+        const response = await fetch('http://localhost:5000/api/auth/profile', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        const result = await response.json();
+        document.getElementById('result').innerHTML = 
+          `<pre>Status: ${response.status}<br>Response: ${JSON.stringify(result, null, 2)}</pre>`;
+      } catch (error) {
+        document.getElementById('result').innerHTML = `Error: ${error.message}`;
+      }
+    }
+  </script>
+</body>
+</html>

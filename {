@@ -1,0 +1,2 @@
+// Add this route in your server.js after other auth routes
+app.get('/api/auth/profile', authenticateToken, async (req, res
