@@ -607,6 +607,522 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
     }
   }
 });
+
+// POST /api/tournaments/:id/complete - Manually complete tournament (admin/creator)
+router.post('/:id/complete', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.userId || req.user.id;
+
+    console.log('🎯 Manually completing tournament:', { tournamentId, userId });
+
+    const tournamentCompleted = await checkTournamentCompletion(tournamentId, true);
+
+    if (!tournamentCompleted) {
+      return res.status(400).json({
+        success: false,
+        error: 'Tournament cannot be completed yet. Not all matches are finished.'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Tournament completed successfully!',
+      tournament_id: tournamentId
+    });
+
+  } catch (error) {
+    console.error('❌ Complete tournament error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to complete tournament: ' + error.message
+    });
+  }
+});
+
+// GET /api/tournaments/:id/standings - Get tournament standings
+router.get('/:id/standings', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+
+    const [standings] = await db.execute(`
+      SELECT 
+        u.id,
+        u.username,
+        u.rank,
+        u.profile_pic,
+        COUNT(DISTINCT tm.id) as matches_played,
+        SUM(CASE WHEN tm.winner_id = u.id THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN tm.winner_id != u.id AND tm.winner_id IS NOT NULL THEN 1 ELSE 0 END) as losses,
+        ROUND(
+          (SUM(CASE WHEN tm.winner_id = u.id THEN 1 ELSE 0 END) * 100.0) / 
+          NULLIF(COUNT(DISTINCT tm.id), 0), 
+          2
+        ) as win_rate
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      LEFT JOIN tournament_matches tm ON (
+        (tm.player1_id = u.id OR tm.player2_id = u.id) 
+        AND tm.tournament_id = tp.tournament_id
+        AND tm.status = 'completed'
+      )
+      WHERE tp.tournament_id = ? AND tp.status = 'joined'
+      GROUP BY u.id, u.username, u.rank
+      ORDER BY 
+        wins DESC,
+        win_rate DESC,
+        matches_played ASC
+    `, [tournamentId]);
+
+    res.json({
+      success: true,
+      standings: standings || [],
+      tournament_id: tournamentId
+    });
+
+  } catch (error) {
+    console.error('❌ Get standings error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get standings: ' + error.message
+    });
+  }
+});
+
+router.get('/:id', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    
+    console.log('🚀 Fetching tournament ID:', tournamentId);
+
+    // Get tournament details WITH squad count
+    const [tournaments] = await db.execute(`
+      SELECT t.*, 
+             u.username as creator_name,
+             u.profile_pic as creator_avatar,
+             COUNT(DISTINCT CASE WHEN t.type != 'squad' THEN tp.user_id ELSE NULL END) as participants_count,
+             COUNT(DISTINCT CASE WHEN t.type = 'squad' THEN tp.group_id ELSE NULL END) as current_squads
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    console.log('✅ Tournaments found:', tournaments.length);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Tournament not found' 
+      });
+    }
+
+    const tournament = tournaments[0];
+    
+    // CHECK IF TOURNAMENT IS FULL AND SHOULD BE LOCKED
+    let isFull = false;
+    let isLocked = false;
+    
+    if (tournament.type === 'squad') {
+      const maxSquads = tournament.max_squads || tournament.max_groups || 8;
+      isFull = (tournament.current_squads || 0) >= maxSquads;
+      isLocked = isFull && tournament.status === 'upcoming';
+    } else {
+      isFull = (tournament.participants_count || 0) >= (tournament.max_players || 0);
+      isLocked = isFull && tournament.status === 'upcoming';
+    }
+    
+    // If tournament is locked, hide details from non-participants
+    if (isLocked) {
+      const userId = req.headers.authorization ? 
+        (jwt.decode(req.headers.authorization.replace('Bearer ', ''))?.userId || null) : null;
+      
+      if (userId) {
+        // Check if user is participant or creator
+        const [hasAccess] = await db.execute(`
+          SELECT 1 FROM (
+            SELECT creator_id FROM tournaments WHERE id = ? AND creator_id = ?
+            UNION
+            SELECT user_id FROM tournament_participants WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
+          ) as access_check
+        `, [tournamentId, userId, tournamentId, userId]);
+        
+        if (hasAccess.length === 0) {
+          return res.status(403).json({
+            success: false,
+            error: 'Tournament is full and locked. Only participants can view details.',
+            tournament_locked: true,
+            tournament_status: 'full'
+          });
+        }
+      } else {
+        return res.status(403).json({
+          success: false,
+          error: 'Tournament is full and locked. Please login to access.',
+          tournament_locked: true,
+          tournament_status: 'full'
+        });
+      }
+    }
+
+    // Get participants (only if not locked or user has access)
+    const [participants] = await db.execute(`
+      SELECT tp.user_id, u.username, u.rank, u.profile_pic, tp.group_id
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      WHERE tp.tournament_id = ? AND tp.status = 'joined'
+      ORDER BY tp.created_at ASC
+    `, [tournamentId]);
+
+    console.log('✅ Participants found:', participants.length);
+
+    // Combine data
+    const tournamentData = {
+      ...tournament,
+      participants_count: tournament.participants_count || 0,
+      current_squads: tournament.current_squads || 0,
+      is_full: isFull,
+      is_locked: isLocked
+    };
+
+    res.json({
+      success: true,
+      tournament: tournamentData,
+      participants: participants || [],
+      access: {
+        can_view: true,
+        can_join: !isFull && tournament.status === 'upcoming'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Database error fetching tournament:', error);
+    console.error('❌ Full error details:', error.stack);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Database error: ' + error.message 
+    });
+  }
+});
+
+// GET /api/tournaments/debug/all - Debug route to see all tournaments
+router.get('/debug/all', async (req, res) => {
+  try {
+    const [tournaments] = await db.execute(`
+      SELECT id, name, creator_id, status, created_at 
+      FROM tournaments 
+      ORDER BY id DESC
+    `);
+    
+    res.json({
+      success: true,
+      tournaments: tournaments,
+      total: tournaments.length
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Debug error: ' + error.message 
+    });
+  }
+});
+
+// Add this route BEFORE your /:id route for debugging
+router.get('/debug/:id', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    console.log('🧪 Debug fetching tournament:', tournamentId);
+    
+    // Test 1: Simple query
+    const [simpleTest] = await db.execute(
+      'SELECT id, name FROM tournaments WHERE id = ?',
+      [tournamentId]
+    );
+    console.log('🧪 Simple test result:', simpleTest);
+    
+    // Test 2: Check participants
+    const [participantsTest] = await db.execute(
+      'SELECT * FROM tournament_participants WHERE tournament_id = ?',
+      [tournamentId]
+    );
+    console.log('🧪 Participants test:', participantsTest);
+    
+    res.json({
+      success: true,
+      simple: simpleTest,
+      participants: participantsTest
+    });
+  } catch (error) {
+    console.error('🧪 Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+// GET /api/tournaments/:id/manage - Get tournament management data
+router.get('/:id/manage', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+
+    // Get tournament with creator check
+    const [tournaments] = await db.execute(`
+      SELECT t.*, u.username as creator_name
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      WHERE t.id = ? AND t.creator_id = ?
+    `, [tournamentId, userId]);
+
+    if (tournaments.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied or tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Get all squads with details
+    const [squads] = await db.execute(`
+      SELECT 
+        tp.group_id,
+        g.name as group_name,
+        COUNT(DISTINCT tp.user_id) as squad_size,
+        GROUP_CONCAT(DISTINCT u.username ORDER BY u.username) as members,
+        GROUP_CONCAT(DISTINCT u.id) as member_ids,
+        MIN(tp.created_at) as registered_at,
+        gm_admin.user_id as admin_id,
+        u_admin.username as admin_name
+      FROM tournament_participants tp
+      JOIN groups g ON tp.group_id = g.id
+      JOIN users u ON tp.user_id = u.id
+      JOIN group_members gm_admin ON g.id = gm_admin.group_id AND gm_admin.role = 'admin'
+      JOIN users u_admin ON gm_admin.user_id = u_admin.id
+      WHERE tp.tournament_id = ? AND tp.status = 'joined'
+      GROUP BY tp.group_id, g.name, gm_admin.user_id, u_admin.username
+      ORDER BY registered_at ASC
+    `, [tournamentId]);
+
+    // Get tournament revenue/stats
+    const [revenue] = await db.execute(`
+      SELECT 
+        SUM(CASE WHEN type = 'spent' THEN amount ELSE 0 END) as total_entry_fees,
+        SUM(CASE WHEN type = 'refund' THEN amount ELSE 0 END) as total_refunds,
+        COUNT(DISTINCT user_id) as unique_payers
+      FROM xp_transactions 
+      WHERE tournament_id = ?
+    `, [tournamentId]);
+
+    res.json({
+      success: true,
+      tournament: tournament,
+      squads: squads || [],
+      stats: {
+        total_squads: squads.length,
+        total_participants: squads.reduce((sum, squad) => sum + squad.squad_size, 0),
+        revenue: revenue[0] || {
+          total_entry_fees: 0,
+          total_refunds: 0,
+          unique_payers: 0
+        }
+      },
+      can_manage: tournament.status === 'upcoming'
+    });
+
+  } catch (error) {
+    console.error('❌ Get tournament manage error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get management data: ' + error.message
+    });
+  }
+});
+// POST /api/tournaments/:id/complete-with-winner - Complete tournament and declare winner
+router.post('/:id/complete-with-winner', authenticate, async (req, res) => {
+  let connection;
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+    const { winner_id, runner_up_id, third_place_id } = req.body;
+
+    console.log('🏆 Completing tournament with winners:', {
+      tournamentId,
+      userId,
+      winner_id,
+      runner_up_id,
+      third_place_id
+    });
+
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT t.*, u.username as creator_name
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      WHERE t.id = ?
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check if user is creator
+    if (parseInt(tournament.creator_id) !== parseInt(userId)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament creator can complete the tournament'
+      });
+    }
+
+    if (tournament.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        error: 'Tournament is already completed'
+      });
+    }
+
+    // Check if winner exists
+    const [winnerCheck] = await db.execute(
+      `SELECT id, username FROM users WHERE id = ?`,
+      [winner_id]
+    );
+
+    if (winnerCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Winner not found'
+      });
+    }
+
+    // Get connection for transaction
+    connection = await db.pool.promise().getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Update tournament with winner
+      await connection.query(`
+        UPDATE tournaments 
+        SET status = 'completed', 
+            winner_id = ?,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE id = ?
+      `, [winner_id, tournamentId]);
+
+      // Distribute prize pool
+      if (tournament.prize_pool > 0) {
+        await distributeTournamentPrizes(tournamentId, winner_id, runner_up_id, third_place_id, tournament, connection);
+      }
+
+      // Update user stats
+      await connection.query(`
+        UPDATE users 
+        SET tournaments_won = COALESCE(tournaments_won, 0) + 1,
+            xp_points = xp_points + ?
+        WHERE id = ?
+      `, [tournament.prize_pool || 0, winner_id]);
+
+      // Record XP award for winner
+      await connection.query(`
+        INSERT INTO xp_transactions (user_id, tournament_id, amount, type, description)
+        VALUES (?, ?, ?, 'earned', ?)
+      `, [winner_id, tournamentId, tournament.prize_pool || 0, `Tournament victory: ${tournament.name}`]);
+
+      // Send notifications to all participants
+      const [participants] = await connection.query(`
+        SELECT DISTINCT user_id FROM tournament_participants 
+        WHERE tournament_id = ? AND status = 'joined'
+      `, [tournamentId]);
+
+      for (const participant of participants) {
+        const isWinner = participant.user_id === parseInt(winner_id);
+        const message = isWinner 
+          ? `🏆 Congratulations! You won the tournament "${tournament.name}" and earned ${tournament.prize_pool || 0} XP!`
+          : `🏁 Tournament "${tournament.name}" has been completed. Winner: ${winnerCheck[0].username}`;
+        
+        await connection.query(`
+          INSERT INTO notifications 
+          (user_id, message, type, status, tournament_id, created_at)
+          VALUES (?, ?, 'tournament', 'unread', ?, NOW())
+        `, [participant.user_id, message, tournamentId]);
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: 'Tournament completed successfully!',
+        tournament: {
+          id: tournamentId,
+          name: tournament.name,
+          status: 'completed',
+          winner_id: winner_id,
+          winner_name: winnerCheck[0].username,
+          prize_pool: tournament.prize_pool
+        }
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Complete tournament error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to complete tournament: ' + error.message
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// Helper function to distribute prizes
+async function distributeTournamentPrizes(tournamentId, winnerId, runnerUpId, thirdPlaceId, tournament, connection) {
+  const prizePool = tournament.prize_pool || 0;
+  
+  // Calculate prize distribution (70%, 20%, 10%)
+  const winnerPrize = Math.floor(prizePool * 0.7);
+  const runnerUpPrize = runnerUpId ? Math.floor(prizePool * 0.2) : 0;
+  const thirdPlacePrize = thirdPlaceId ? Math.floor(prizePool * 0.1) : 0;
+
+  // Award prizes
+  const prizes = [
+    { userId: winnerId, amount: winnerPrize, position: 1 },
+    { userId: runnerUpId, amount: runnerUpPrize, position: 2 },
+    { userId: thirdPlaceId, amount: thirdPlacePrize, position: 3 }
+  ];
+
+  for (const prize of prizes) {
+    if (prize.userId && prize.amount > 0) {
+      await connection.query(`
+        UPDATE users SET xp_points = xp_points + ? WHERE id = ?
+      `, [prize.amount, prize.userId]);
+
+      await connection.query(`
+        INSERT INTO xp_transactions (user_id, tournament_id, amount, type, description)
+        VALUES (?, ?, ?, 'earned', ?)
+      `, [prize.userId, tournamentId, prize.amount, `${prize.position === 1 ? '🏆 ' : ''}Tournament prize (${prize.position}${getOrdinalSuffix(prize.position)} place): ${tournament.name}`]);
+    }
+  }
+}
+
+function getOrdinalSuffix(n) {
+  if (n > 3 && n < 21) return 'th';
+  switch (n % 10) {
+    case 1: return 'st';
+    case 2: return 'nd';
+    case 3: return 'rd';
+    default: return 'th';
+  }
+}
 // POST /api/tournaments/:id/kick-group - Remove group from tournament (Creator only)
 router.post('/:id/kick-group', authenticate, async (req, res) => {
   let connection;
@@ -748,202 +1264,6 @@ router.post('/:id/kick-group', authenticate, async (req, res) => {
     }
   }
 });
-
-// POST /api/tournaments/:id/complete - Manually complete tournament (admin/creator)
-router.post('/:id/complete', authenticate, async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
-
-    console.log('🎯 Manually completing tournament:', { tournamentId, userId });
-
-    const tournamentCompleted = await checkTournamentCompletion(tournamentId, true);
-
-    if (!tournamentCompleted) {
-      return res.status(400).json({
-        success: false,
-        error: 'Tournament cannot be completed yet. Not all matches are finished.'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Tournament completed successfully!',
-      tournament_id: tournamentId
-    });
-
-  } catch (error) {
-    console.error('❌ Complete tournament error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to complete tournament: ' + error.message
-    });
-  }
-});
-
-// GET /api/tournaments/:id/standings - Get tournament standings
-router.get('/:id/standings', async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-
-    const [standings] = await db.execute(`
-      SELECT 
-        u.id,
-        u.username,
-        u.rank,
-        u.profile_pic,
-        COUNT(DISTINCT tm.id) as matches_played,
-        SUM(CASE WHEN tm.winner_id = u.id THEN 1 ELSE 0 END) as wins,
-        SUM(CASE WHEN tm.winner_id != u.id AND tm.winner_id IS NOT NULL THEN 1 ELSE 0 END) as losses,
-        ROUND(
-          (SUM(CASE WHEN tm.winner_id = u.id THEN 1 ELSE 0 END) * 100.0) / 
-          NULLIF(COUNT(DISTINCT tm.id), 0), 
-          2
-        ) as win_rate
-      FROM tournament_participants tp
-      JOIN users u ON tp.user_id = u.id
-      LEFT JOIN tournament_matches tm ON (
-        (tm.player1_id = u.id OR tm.player2_id = u.id) 
-        AND tm.tournament_id = tp.tournament_id
-        AND tm.status = 'completed'
-      )
-      WHERE tp.tournament_id = ? AND tp.status = 'joined'
-      GROUP BY u.id, u.username, u.rank
-      ORDER BY 
-        wins DESC,
-        win_rate DESC,
-        matches_played ASC
-    `, [tournamentId]);
-
-    res.json({
-      success: true,
-      standings: standings || [],
-      tournament_id: tournamentId
-    });
-
-  } catch (error) {
-    console.error('❌ Get standings error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get standings: ' + error.message
-    });
-  }
-});
-
-// GET /api/tournaments/:id - Get tournament by ID
-router.get('/:id', async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    
-    console.log('🚀 Fetching tournament ID:', tournamentId);
-
-    // Get tournament details
-    const [tournaments] = await db.execute(`
-      SELECT t.*, 
-             u.username as creator_name,
-             u.profile_pic as creator_avatar,
-             (SELECT COUNT(*) FROM tournament_participants tp 
-              WHERE tp.tournament_id = t.id) as participants_count
-      FROM tournaments t
-      LEFT JOIN users u ON t.creator_id = u.id
-      WHERE t.id = ?
-    `, [tournamentId]);
-
-    console.log('✅ Tournaments found:', tournaments.length);
-
-    if (tournaments.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Tournament not found' 
-      });
-    }
-
-    // Get participants
-    const [participants] = await db.execute(`
-      SELECT tp.user_id, u.username, u.rank, u.profile_pic
-      FROM tournament_participants tp
-      JOIN users u ON tp.user_id = u.id
-      WHERE tp.tournament_id = ?
-      ORDER BY tp.created_at ASC
-    `, [tournamentId]);
-
-    console.log('✅ Participants found:', participants.length);
-
-    // Combine data - FIXED THE TYPO HERE
-    const tournamentData = {
-      ...tournaments[0],
-      participants_count: tournaments[0].participants_count || 0
-    };
-
-    res.json({
-      success: true,
-      tournament: tournamentData,
-      participants: participants || []
-    });
-
-  } catch (error) {
-    console.error('❌ Database error fetching tournament:', error);
-    console.error('❌ Full error details:', error.stack);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Database error: ' + error.message 
-    });
-  }
-});
-
-// GET /api/tournaments/debug/all - Debug route to see all tournaments
-router.get('/debug/all', async (req, res) => {
-  try {
-    const [tournaments] = await db.execute(`
-      SELECT id, name, creator_id, status, created_at 
-      FROM tournaments 
-      ORDER BY id DESC
-    `);
-    
-    res.json({
-      success: true,
-      tournaments: tournaments,
-      total: tournaments.length
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Debug error: ' + error.message 
-    });
-  }
-});
-
-// Add this route BEFORE your /:id route for debugging
-router.get('/debug/:id', async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-    console.log('🧪 Debug fetching tournament:', tournamentId);
-    
-    // Test 1: Simple query
-    const [simpleTest] = await db.execute(
-      'SELECT id, name FROM tournaments WHERE id = ?',
-      [tournamentId]
-    );
-    console.log('🧪 Simple test result:', simpleTest);
-    
-    // Test 2: Check participants
-    const [participantsTest] = await db.execute(
-      'SELECT * FROM tournament_participants WHERE tournament_id = ?',
-      [tournamentId]
-    );
-    console.log('🧪 Participants test:', participantsTest);
-    
-    res.json({
-      success: true,
-      simple: simpleTest,
-      participants: participantsTest
-    });
-  } catch (error) {
-    console.error('🧪 Debug error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // GET /api/tournaments/:id/bracket - Get tournament bracket (OPTIMIZED & FIXED)
 router.get('/:id/bracket', authenticate, async (req, res) => {
   try {
@@ -2134,6 +2454,139 @@ const [tournaments] = await db.execute(`
     });
   }
 });
+// POST /api/tournaments/:id/generate-invite - Generate invite link (Creator only)
+router.post('/:id/generate-invite', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+
+    // Check if user is creator
+    const [tournaments] = await db.execute(`
+      SELECT id, name, status FROM tournaments 
+      WHERE id = ? AND creator_id = ?
+    `, [tournamentId, userId]);
+
+    if (tournaments.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament creator can generate invite links'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    if (tournament.status !== 'upcoming') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot generate invite links for started tournaments'
+      });
+    }
+
+    // Generate unique invite code
+    const inviteCode = `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Store invite in database
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24); // 24 hour expiry
+
+    await db.execute(`
+      INSERT INTO tournament_invites 
+      (tournament_id, invite_code, created_by, expires_at, max_uses, use_count, is_active)
+      VALUES (?, ?, ?, ?, ?, 0, 1)
+    `, [tournamentId, inviteCode, userId, expiresAt, 50]); // Max 50 uses
+
+    const inviteLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/tournaments/join/${inviteCode}`;
+
+    res.json({
+      success: true,
+      message: 'Invite link generated successfully',
+      invite: {
+        code: inviteCode,
+        link: inviteLink,
+        expires_at: expiresAt,
+        max_uses: 50,
+        tournament_id: tournamentId,
+        tournament_name: tournament.name
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Generate invite error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to generate invite: ' + error.message
+    });
+  }
+});
+// POST /api/tournaments/join/:inviteCode - Join tournament via invite link
+router.post('/join/:inviteCode', authenticate, async (req, res) => {
+  try {
+    const inviteCode = req.params.inviteCode;
+    const userId = req.user.id;
+    const { group_id } = req.body; // Optional for squad tournaments
+
+    console.log('🎫 Joining via invite:', { inviteCode, userId });
+
+    // Get invite details
+    const [invites] = await db.execute(`
+      SELECT ti.*, t.*
+      FROM tournament_invites ti
+      JOIN tournaments t ON ti.tournament_id = t.id
+      WHERE ti.invite_code = ? 
+        AND ti.is_active = 1 
+        AND (ti.expires_at IS NULL OR ti.expires_at > NOW())
+        AND (ti.max_uses IS NULL OR ti.use_count < ti.max_uses)
+    `, [inviteCode]);
+
+    if (invites.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Invalid or expired invite link'
+      });
+    }
+
+    const invite = invites[0];
+    const tournamentId = invite.tournament_id;
+
+    // Check if tournament is still joinable
+    if (invite.status !== 'upcoming') {
+      return res.status(400).json({
+        success: false,
+        error: 'Tournament is no longer accepting participants'
+      });
+    }
+
+    // Increment invite use count
+    await db.execute(`
+      UPDATE tournament_invites 
+      SET use_count = use_count + 1, last_used_at = NOW()
+      WHERE invite_code = ?
+    `, [inviteCode]);
+
+    // Use the existing join endpoint logic
+    // You can either call the existing join function or reuse the logic here
+    // For simplicity, we'll prepare the request and redirect to normal join
+    
+    res.json({
+      success: true,
+      message: 'Invite validated successfully',
+      tournament_id: tournamentId,
+      tournament_name: invite.name,
+      next_step: 'call_join_endpoint',
+      data: {
+        tournamentId: tournamentId,
+        group_id: group_id
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Join via invite error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to join via invite: ' + error.message
+    });
+  }
+});
 
 // ============================
 // REMAINING ROUTES (KEEP AS IS)
@@ -2165,38 +2618,52 @@ ORDER BY t.created_at DESC
   }
 });
 
-// GET /api/tournaments/:id/chat - Get tournament chat messages
+// GET /api/tournaments/:id/chat - Get tournament chat messages (updated)
 router.get('/:id/chat', authenticate, async (req, res) => {
   try {
     const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
+    const userId = req.user.id;
 
-    // Check if user is participant
-    const [isParticipant] = await db.execute(`
-      SELECT 1 FROM tournament_participants 
-      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
-    `, [tournamentId, userId]);
+    // Check if user is participant or creator
+    const [hasAccess] = await db.execute(`
+      SELECT 1 FROM (
+        SELECT creator_id FROM tournaments WHERE id = ? AND creator_id = ?
+        UNION
+        SELECT user_id FROM tournament_participants WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
+      ) as access_check
+    `, [tournamentId, userId, tournamentId, userId]);
 
-    if (isParticipant.length === 0) {
+    if (hasAccess.length === 0) {
       return res.status(403).json({
         success: false,
-        error: 'Only tournament participants can access chat'
+        error: 'Only tournament participants and creator can access chat'
       });
     }
 
-    // Get chat messages
+    // Get chat messages with user details
     const [messages] = await db.execute(`
-      SELECT tc.*, u.username, u.profile_pic
+      SELECT 
+        tc.*, 
+        u.username,
+        u.profile_pic,
+        u.rank,
+        CASE 
+          WHEN u.id = ? THEN 'you'
+          WHEN u.id = (SELECT creator_id FROM tournaments WHERE id = ?) THEN 'creator'
+          ELSE 'participant'
+        END as user_role
       FROM tournament_chat tc
       JOIN users u ON tc.user_id = u.id
       WHERE tc.tournament_id = ?
-      ORDER BY tc.created_at ASC
-      LIMIT 100
-    `, [tournamentId]);
+      ORDER BY tc.created_at DESC
+      LIMIT 50
+    `, [userId, tournamentId, tournamentId]);
 
     res.json({
       success: true,
-      messages: messages || []
+      messages: messages.reverse() || [], // Return in chronological order
+      tournament_id: tournamentId,
+      user_id: userId
     });
 
   } catch (error) {
@@ -2207,12 +2674,11 @@ router.get('/:id/chat', authenticate, async (req, res) => {
     });
   }
 });
-
-// POST /api/tournaments/:id/chat - Send chat message
-router.post('/:id/chat', authenticate, async (req, res) => {
+// POST /api/tournaments/:id/chat/send - Send chat message (updated)
+router.post('/:id/chat/send', authenticate, async (req, res) => {
   try {
     const tournamentId = req.params.id;
-    const userId = req.user.userId || req.user.id;
+    const userId = req.user.id;
     const { message } = req.body;
 
     if (!message || message.trim().length === 0) {
@@ -2229,16 +2695,19 @@ router.post('/:id/chat', authenticate, async (req, res) => {
       });
     }
 
-    // Check if user is participant
-    const [isParticipant] = await db.execute(`
-      SELECT 1 FROM tournament_participants 
-      WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
-    `, [tournamentId, userId]);
+    // Check if user is participant or creator
+    const [hasAccess] = await db.execute(`
+      SELECT 1 FROM (
+        SELECT creator_id FROM tournaments WHERE id = ? AND creator_id = ?
+        UNION
+        SELECT user_id FROM tournament_participants WHERE tournament_id = ? AND user_id = ? AND status = 'joined'
+      ) as access_check
+    `, [tournamentId, userId, tournamentId, userId]);
 
-    if (isParticipant.length === 0) {
+    if (hasAccess.length === 0) {
       return res.status(403).json({
         success: false,
-        error: 'Only tournament participants can send messages'
+        error: 'Only tournament participants and creator can send messages'
       });
     }
 
@@ -2250,16 +2719,25 @@ router.post('/:id/chat', authenticate, async (req, res) => {
 
     // Get the inserted message with user details
     const [insertedMessage] = await db.execute(`
-      SELECT tc.*, u.username, u.profile_pic
+      SELECT 
+        tc.*, 
+        u.username,
+        u.profile_pic,
+        u.rank,
+        CASE 
+          WHEN u.id = ? THEN 'you'
+          WHEN u.id = (SELECT creator_id FROM tournaments WHERE id = ?) THEN 'creator'
+          ELSE 'participant'
+        END as user_role
       FROM tournament_chat tc
       JOIN users u ON tc.user_id = u.id
       WHERE tc.id = ?
-    `, [result.insertId]);
+    `, [userId, tournamentId, result.insertId]);
 
     res.json({
       success: true,
       message: 'Message sent successfully',
-      chatMessage: insertedMessage[0]
+      chat_message: insertedMessage[0]
     });
 
   } catch (error) {

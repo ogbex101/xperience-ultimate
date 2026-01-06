@@ -327,11 +327,6 @@ const tournamentsAPI = {
     return await api.get('/tournaments');
   },
   
-  getMatchDetails: async (tournamentId, matchId) => {
-    console.log(`🎮 TournamentsAPI: Fetching match ${matchId} in tournament ${tournamentId}`);
-    return await api.get(`/tournaments/${tournamentId}/match/${matchId}`);
-  },
-  
   getById: async (id) => {
     console.log(`🏆 TournamentsAPI: Fetching tournament ${id}`);
     return await api.get(`/tournaments/${id}`);
@@ -342,7 +337,6 @@ const tournamentsAPI = {
     return await api.post('/tournaments', tournamentData);
   },
   
-  // UPDATED: Now supports groupData for squad tournaments
   join: async (tournamentId, groupData = null) => {
     console.log(`🏆 TournamentsAPI: Joining tournament ${tournamentId}`, groupData);
     return await api.post(`/tournaments/${tournamentId}/join`, groupData || {});
@@ -358,67 +352,39 @@ const tournamentsAPI = {
     return await api.get(`/tournaments/${tournamentId}/bracket`);
   },
   
-  submitMatchResult: async (tournamentId, matchId, winnerId, proof = null, notes = null) => {
-    console.log(`🏆 TournamentsAPI: Submitting result for match ${matchId} in tournament ${tournamentId}`);
-    return await api.post(`/tournaments/${tournamentId}/matches/${matchId}/result`, {
-      winnerId,
-      proof,
-      notes
-    });
-  },
-  
-  completeTournament: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Completing tournament ${tournamentId}`);
-    try {
-      return await api.post(`/tournaments/${tournamentId}/complete`);
-    } catch (error) {
-      console.error('TournamentsAPI: Complete tournament error:', error);
-      throw error;
-    }
-  },
-  
-  getStandings: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Fetching standings for tournament ${tournamentId}`);
-    return await api.get(`/tournaments/${tournamentId}/standings`);
-  },
-  
-  getMyMatches: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Fetching my matches in tournament ${tournamentId}`);
-    return await api.get(`/tournaments/${tournamentId}/my-matches`);
-  },
-  
+  // NEW CHAT FUNCTIONS
   getChat: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Fetching chat for tournament ${tournamentId}`);
+    console.log(`💬 TournamentsAPI: Fetching chat for tournament ${tournamentId}`);
     return await api.get(`/tournaments/${tournamentId}/chat`);
   },
   
-  sendChat: async (tournamentId, message) => {
-    console.log(`🏆 TournamentsAPI: Sending chat message to tournament ${tournamentId}`);
-    return await api.post(`/tournaments/${tournamentId}/chat`, { message });
+  sendChatMessage: async (tournamentId, message) => {
+    console.log(`💬 TournamentsAPI: Sending chat message to tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/chat/send`, { message });
   },
   
-  kickParticipant: async (tournamentId, userId) => {
-    console.log(`🏆 TournamentsAPI: Kicking participant ${userId} from tournament ${tournamentId}`);
-    return await api.delete(`/tournaments/${tournamentId}/participants/${userId}`);
+  // NEW MANAGEMENT FUNCTIONS
+  getManagementData: async (tournamentId) => {
+    console.log(`⚙️ TournamentsAPI: Fetching management data for tournament ${tournamentId}`);
+    return await api.get(`/tournaments/${tournamentId}/manage`);
   },
   
-  cancel: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Cancelling tournament ${tournamentId}`);
-    return await api.post(`/tournaments/${tournamentId}/cancel`);
+  generateInviteLink: async (tournamentId) => {
+    console.log(`🔗 TournamentsAPI: Generating invite link for tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/generate-invite`);
   },
   
-  getParticipants: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Fetching participants for tournament ${tournamentId}`);
-    return await api.get(`/tournaments/${tournamentId}/participants`);
+  kickGroup: async (tournamentId, groupData) => {
+    console.log(`👢 TournamentsAPI: Kicking group from tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/kick-group`, groupData);
   },
   
-  leaveTournament: async (tournamentId) => {
-    console.log(`🏆 TournamentsAPI: Leaving tournament ${tournamentId}`);
-    return await api.post(`/tournaments/${tournamentId}/leave`);
+  completeWithWinner: async (tournamentId, winnerData) => {
+    console.log(`🏆 TournamentsAPI: Completing tournament ${tournamentId} with winner`);
+    return await api.post(`/tournaments/${tournamentId}/complete-with-winner`, winnerData);
   },
   
-  // NEW: Squad tournament functions
-  
+  // SQUAD FUNCTIONS
   getUserGroups: async () => {
     console.log('👥 TournamentsAPI: Fetching user groups');
     return await api.get('/tournaments/user-groups');
@@ -434,7 +400,7 @@ const tournamentsAPI = {
     return await api.post(`/tournaments/${tournamentId}/validate-group`, groupData);
   },
   
-   // XP-related methods
+  // XP FUNCTIONS
   getUserProfile: async () => {
     try {
       console.log('👤 TournamentsAPI: Fetching user profile with XP');
@@ -463,9 +429,55 @@ const tournamentsAPI = {
       };
     }
   },
+  
   getUserTournaments: async () => {
     console.log('📋 TournamentsAPI: Fetching user tournaments');
     return await api.get('/tournaments/my-tournaments');
+  },
+  
+  // OTHER FUNCTIONS (keep as is)
+  getMatchDetails: async (tournamentId, matchId) => {
+    console.log(`🎮 TournamentsAPI: Fetching match ${matchId} in tournament ${tournamentId}`);
+    return await api.get(`/tournaments/${tournamentId}/match/${matchId}`);
+  },
+  
+  submitMatchResult: async (tournamentId, matchId, winnerId, proof = null, notes = null) => {
+    console.log(`🏆 TournamentsAPI: Submitting result for match ${matchId} in tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/matches/${matchId}/result`, {
+      winnerId,
+      proof,
+      notes
+    });
+  },
+  
+  getStandings: async (tournamentId) => {
+    console.log(`🏆 TournamentsAPI: Fetching standings for tournament ${tournamentId}`);
+    return await api.get(`/tournaments/${tournamentId}/standings`);
+  },
+  
+  getMyMatches: async (tournamentId) => {
+    console.log(`🏆 TournamentsAPI: Fetching my matches in tournament ${tournamentId}`);
+    return await api.get(`/tournaments/${tournamentId}/my-matches`);
+  },
+  
+  kickParticipant: async (tournamentId, userId) => {
+    console.log(`🏆 TournamentsAPI: Kicking participant ${userId} from tournament ${tournamentId}`);
+    return await api.delete(`/tournaments/${tournamentId}/participants/${userId}`);
+  },
+  
+  cancel: async (tournamentId) => {
+    console.log(`🏆 TournamentsAPI: Cancelling tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/cancel`);
+  },
+  
+  getParticipants: async (tournamentId) => {
+    console.log(`🏆 TournamentsAPI: Fetching participants for tournament ${tournamentId}`);
+    return await api.get(`/tournaments/${tournamentId}/participants`);
+  },
+  
+  leaveTournament: async (tournamentId) => {
+    console.log(`🏆 TournamentsAPI: Leaving tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/leave`);
   }
 };
 

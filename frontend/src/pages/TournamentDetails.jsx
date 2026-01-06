@@ -2,13 +2,16 @@ import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { tournamentsAPI } from '../utils/api'
 import TournamentBracket from './TournamentBracket'
+import TournamentChat from '../pages/TournamentChat'
+import TournamentCompletionModal from '../components/TournamentCompletionModal'
 import SquadRegistrationModal from '../components/SquadRegistrationModal';
 import { useAuth } from '../contexts/AuthContext'
 import { 
   Trophy, Users, Calendar, DollarSign, ArrowLeft, 
   Clock, User, Award, Swords, AlertCircle, Loader,
   Shield, Crown, Target, CheckCircle, XCircle, 
-  ChevronRight, Map, BarChart3
+  ChevronRight, Map, BarChart3, MessageSquare,
+  Settings, UserMinus, Share2, Lock, Unlock, Star
 } from 'lucide-react'
 
 const TournamentDetails = () => {
@@ -28,8 +31,12 @@ const TournamentDetails = () => {
   const [success, setSuccess] = useState('')
   const [apiError, setApiError] = useState('')
   const [showSquadModal, setShowSquadModal] = useState(false)
+  const [showCompletionModal, setShowCompletionModal] = useState(false)
   const [xpBalance, setXpBalance] = useState(0)
   const [activeTab, setActiveTab] = useState('overview')
+  const [managementData, setManagementData] = useState(null)
+  const [inviteLink, setInviteLink] = useState('')
+  const [generatingInvite, setGeneratingInvite] = useState(false)
 
   useEffect(() => {
     fetchTournamentDetails()
@@ -58,6 +65,11 @@ const TournamentDetails = () => {
         // Fetch squads if squad tournament
         if (data.tournament?.type === 'squad') {
           fetchSquads()
+        }
+        
+        // If user is creator, fetch management data
+        if (user && data.tournament?.creator_id === user.id) {
+          fetchManagementData()
         }
       } else {
         setError(data?.error || 'Failed to load tournament details')
@@ -116,6 +128,57 @@ const TournamentDetails = () => {
     }
   }
 
+  const fetchManagementData = async () => {
+    try {
+      const response = await tournamentsAPI.getManagementData(id)
+      if (response.success) {
+        setManagementData(response)
+      }
+    } catch (error) {
+      console.error('Error fetching management data:', error)
+    }
+  }
+
+  const handleGenerateInvite = async () => {
+    try {
+      setGeneratingInvite(true)
+      const response = await tournamentsAPI.generateInviteLink(id)
+      if (response.success) {
+        setInviteLink(response.invite.link)
+        setSuccess('Invite link generated successfully!')
+        
+        // Copy to clipboard
+        navigator.clipboard.writeText(response.invite.link)
+        setTimeout(() => {
+          setSuccess('Invite link copied to clipboard!')
+        }, 1000)
+      }
+    } catch (error) {
+      setError('Failed to generate invite link')
+    } finally {
+      setGeneratingInvite(false)
+    }
+  }
+
+  const handleKickGroup = async (groupId) => {
+    if (!confirm('Are you sure you want to remove this group from the tournament?')) {
+      return
+    }
+
+    try {
+      const response = await tournamentsAPI.kickGroup(id, { group_id: groupId })
+      if (response.success) {
+        setSuccess(`Group removed successfully. ${response.xp_refunded > 0 ? `Refunded ${response.xp_refunded} XP.` : ''}`)
+        fetchTournamentDetails()
+        fetchManagementData()
+      } else {
+        setError(response.error || 'Failed to remove group')
+      }
+    } catch (error) {
+      setError('Failed to remove group: ' + error.message)
+    }
+  }
+
   const handleJoinTournament = async (groupData = null) => {
     if (!user) {
       navigate('/login')
@@ -155,6 +218,12 @@ const TournamentDetails = () => {
     }
   }
 
+  const handleCompleteTournament = (updatedTournament) => {
+    setTournament(updatedTournament)
+    fetchTournamentDetails()
+    setSuccess('Tournament completed successfully!')
+  }
+
   const validateGroupForTournament = async (groupId) => {
     try {
       const response = await tournamentsAPI.validateGroup(id, { group_id: groupId })
@@ -177,7 +246,7 @@ const TournamentDetails = () => {
 
   const isTournamentFull = () => {
     if (tournament.type === 'squad') {
-      return squads.length >= (tournament.max_squads || 8)
+      return squads.length >= (tournament.max_squads || tournament.max_groups || 8)
     }
     return participants.length >= (tournament?.max_players || 0)
   }
@@ -333,7 +402,15 @@ const TournamentDetails = () => {
               <span>Back to Tournaments</span>
             </button>
           </div>
-          {getStatusBadge(tournament.status)}
+          <div className="flex items-center space-x-3">
+            {getStatusBadge(tournament.status)}
+            {tournament.is_locked && (
+              <span className="px-3 py-1 rounded-full text-sm font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                <Lock className="w-3 h-3 inline mr-1" />
+                Locked
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Error/Success Messages */}
@@ -365,6 +442,12 @@ const TournamentDetails = () => {
                     XP Tournament
                   </span>
                 )}
+                {tournament.is_full && (
+                  <span className="px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs font-medium">
+                    <Lock className="w-3 h-3 inline mr-1" />
+                    Full
+                  </span>
+                )}
               </div>
               <h1 className="text-3xl font-bold text-white mb-2">
                 {tournament.name || 'Unnamed Tournament'}
@@ -394,7 +477,7 @@ const TournamentDetails = () => {
               </div>
               <div className="text-white font-semibold text-xl">
                 {tournament.type === 'squad' 
-                  ? `${squads.length}/${tournament.max_squads || 8}`
+                  ? `${tournament.current_squads || 0}/${tournament.max_squads || tournament.max_groups || 8}`
                   : `${participants.length}/${tournament.max_players || 0}`
                 }
               </div>
@@ -527,15 +610,71 @@ const TournamentDetails = () => {
                   Login to Join
                 </button>
               )}
+
+              {/* Creator Actions */}
+              {user?.id === tournament.creator_id && (
+                <>
+                  {tournament.status === 'ongoing' && (
+                    <button
+                      onClick={() => setShowCompletionModal(true)}
+                      className="btn-primary bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600"
+                    >
+                      <Trophy className="w-5 h-5 mr-2" />
+                      Complete
+                    </button>
+                  )}
+                  
+                  {tournament.status === 'upcoming' && (
+                    <button
+                      onClick={handleGenerateInvite}
+                      disabled={generatingInvite}
+                      className="btn-secondary flex items-center space-x-2"
+                    >
+                      {generatingInvite ? (
+                        <Loader className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <>
+                          <Share2 className="w-5 h-5" />
+                          <span>Invite</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>
 
+        {/* Invite Link Display */}
+        {inviteLink && (
+          <div className="card mb-6 bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-purple-500/20">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-white mb-1">Invite Link Generated!</h3>
+                <p className="text-sm text-gray-300">Share this link with others to join:</p>
+                <div className="mt-2 p-3 bg-gray-800 rounded-lg border border-gray-700">
+                  <code className="text-sm text-purple-300 break-all">{inviteLink}</code>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(inviteLink)
+                  setSuccess('Link copied to clipboard!')
+                }}
+                className="btn-secondary"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Tabs */}
-        <div className="flex space-x-1 mb-6 border-b border-gray-800">
+        <div className="flex space-x-1 mb-6 border-b border-gray-800 overflow-x-auto">
           <button
             onClick={() => setActiveTab('overview')}
-            className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors ${
+            className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors whitespace-nowrap ${
               activeTab === 'overview'
                 ? 'bg-gray-800 text-white border-b-2 border-purple-500'
                 : 'text-gray-400 hover:text-white'
@@ -549,7 +688,7 @@ const TournamentDetails = () => {
           
           <button
             onClick={() => setActiveTab('participants')}
-            className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors ${
+            className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors whitespace-nowrap ${
               activeTab === 'participants'
                 ? 'bg-gray-800 text-white border-b-2 border-purple-500'
                 : 'text-gray-400 hover:text-white'
@@ -567,7 +706,7 @@ const TournamentDetails = () => {
           {tournament.type === '1v1' && (
             <button
               onClick={() => setActiveTab('bracket')}
-              className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors ${
+              className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors whitespace-nowrap ${
                 activeTab === 'bracket'
                   ? 'bg-gray-800 text-white border-b-2 border-purple-500'
                   : 'text-gray-400 hover:text-white'
@@ -576,6 +715,36 @@ const TournamentDetails = () => {
               <div className="flex items-center space-x-2">
                 <Map className="w-4 h-4" />
                 <span>Bracket</span>
+              </div>
+            </button>
+          )}
+          
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors whitespace-nowrap ${
+              activeTab === 'chat'
+                ? 'bg-gray-800 text-white border-b-2 border-purple-500'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <div className="flex items-center space-x-2">
+              <MessageSquare className="w-4 h-4" />
+              <span>Chat</span>
+            </div>
+          </button>
+          
+          {user?.id === tournament.creator_id && (
+            <button
+              onClick={() => setActiveTab('manage')}
+              className={`px-4 py-2 font-medium text-sm rounded-t-lg transition-colors whitespace-nowrap ${
+                activeTab === 'manage'
+                  ? 'bg-gray-800 text-white border-b-2 border-purple-500'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              <div className="flex items-center space-x-2">
+                <Settings className="w-4 h-4" />
+                <span>Manage</span>
               </div>
             </button>
           )}
@@ -654,7 +823,7 @@ const TournamentDetails = () => {
                       <>
                         <div className="flex justify-between">
                           <span className="text-gray-400">Max Squads:</span>
-                          <span className="text-white">{tournament.max_squads || 8}</span>
+                          <span className="text-white">{tournament.max_squads || tournament.max_groups || 8}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-gray-400">Players per Squad:</span>
@@ -864,6 +1033,156 @@ const TournamentDetails = () => {
               onTournamentStarted={fetchTournamentDetails}
             />
           )}
+
+          {/* Chat Tab */}
+          {activeTab === 'chat' && (
+            <div className="card">
+              <div className="h-[500px]">
+                <TournamentChat tournamentId={tournament.id} />
+              </div>
+            </div>
+          )}
+
+          {/* Management Tab (Creator Only) */}
+          {activeTab === 'manage' && user?.id === tournament.creator_id && (
+            <div className="space-y-6">
+              {/* Management Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="card">
+                  <h3 className="text-lg font-semibold text-white mb-4">Tournament Control</h3>
+                  <div className="space-y-3">
+                    {tournament.status === 'upcoming' && (
+                      <>
+                        <button
+                          onClick={handleGenerateInvite}
+                          disabled={generatingInvite || tournament.is_full}
+                          className="w-full btn-secondary flex items-center justify-center space-x-2"
+                        >
+                          {generatingInvite ? (
+                            <Loader className="w-5 h-5 animate-spin" />
+                          ) : (
+                            <>
+                              <Share2 className="w-5 h-5" />
+                              <span>Generate Invite Link</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => tournamentsAPI.start(id)}
+                          disabled={participants.length < 2}
+                          className="w-full btn-primary"
+                        >
+                          Start Tournament
+                        </button>
+                      </>
+                    )}
+                    {tournament.status === 'ongoing' && (
+                      <button
+                        onClick={() => setShowCompletionModal(true)}
+                        className="w-full btn-primary bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600"
+                      >
+                        <Trophy className="w-5 h-5 mr-2 inline" />
+                        Complete Tournament
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3 className="text-lg font-semibold text-white mb-4">Revenue Stats</h3>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Total Entry Fees:</span>
+                      <span className="text-green-400">
+                        {managementData?.stats?.revenue?.total_entry_fees?.toLocaleString() || 0} XP
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Total Refunds:</span>
+                      <span className="text-red-400">
+                        {managementData?.stats?.revenue?.total_refunds?.toLocaleString() || 0} XP
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Unique Payers:</span>
+                      <span className="text-blue-400">
+                        {managementData?.stats?.revenue?.unique_payers || 0}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3 className="text-lg font-semibold text-white mb-4">Participant Stats</h3>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Total Squads:</span>
+                      <span className="text-white">{managementData?.stats?.total_squads || squads.length}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Total Players:</span>
+                      <span className="text-white">{managementData?.stats?.total_participants || participants.length}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Tournament Status:</span>
+                      {getStatusBadge(tournament.status)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Squad Management */}
+              {tournament.type === 'squad' && tournament.status === 'upcoming' && (
+                <div className="card">
+                  <h3 className="text-xl font-semibold text-white mb-4 flex items-center space-x-2">
+                    <Shield className="w-5 h-5" />
+                    <span>Squad Management</span>
+                  </h3>
+                  
+                  {squads.length === 0 ? (
+                    <div className="text-center py-8">
+                      <p className="text-gray-400">No squads registered yet</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {squads.map((squad) => (
+                        <div key={squad.group_id} className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                          <div className="flex justify-between items-start mb-3">
+                            <div>
+                              <h4 className="font-semibold text-white">
+                                {squad.group_name}
+                                {squad.squad_name && (
+                                  <span className="text-purple-400 ml-2">- {squad.squad_name}</span>
+                                )}
+                              </h4>
+                              <p className="text-sm text-gray-400 mt-1">
+                                Admin: {squad.admin_name} • Members: {squad.squad_size}/5
+                              </p>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <span className="text-xs text-gray-400">
+                                Joined: {new Date(squad.registered_at).toLocaleDateString()}
+                              </span>
+                              <button
+                                onClick={() => handleKickGroup(squad.group_id)}
+                                className="px-3 py-1 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-sm flex items-center space-x-1"
+                              >
+                                <Kick className="w-3 h-3" />
+                                <span>Remove</span>
+                              </button>
+                            </div>
+                          </div>
+                          <div className="text-sm text-gray-300">
+                            <span className="font-medium">Members:</span> {squad.members}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -876,6 +1195,15 @@ const TournamentDetails = () => {
           onClose={() => setShowSquadModal(false)}
           onJoin={handleJoinTournament}
           onValidate={validateGroupForTournament}
+        />
+      )}
+
+      {/* Tournament Completion Modal */}
+      {showCompletionModal && (
+        <TournamentCompletionModal
+          tournament={tournament}
+          onClose={() => setShowCompletionModal(false)}
+          onComplete={handleCompleteTournament}
         />
       )}
     </div>
