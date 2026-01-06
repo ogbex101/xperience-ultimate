@@ -434,31 +434,33 @@ const tournamentsAPI = {
     return await api.post(`/tournaments/${tournamentId}/validate-group`, groupData);
   },
   
+   // XP-related methods
   getUserProfile: async () => {
     try {
-      const response = await api.get('/users/profile-with-xp'); // Changed from /users/profile
-      return response.data;
+      console.log('👤 TournamentsAPI: Fetching user profile with XP');
+      const response = await api.get('/users/profile-with-xp');
+      return response;
     } catch (error) {
       console.error('Get user profile error:', error);
       return {
         success: false,
-        data: { xp_points: 0 }
+        data: { user: { xp_points: 0 } },
+        xp_points: 0
       };
     }
   },
+  
   getUserXP: async () => {
     try {
-      const response = await api.get('/users/profile-with-xp');
-      if (response.data.success) {
-        return {
-          success: true,
-          xp_points: response.data.data?.user?.xp_points || 0
-        };
-      }
-      return { success: false, xp_points: 0 };
+      console.log('💰 TournamentsAPI: Fetching user XP');
+      const response = await api.get('/users/xp');
+      return response;
     } catch (error) {
       console.error('Get user XP error:', error);
-      return { success: false, xp_points: 0 };
+      return { 
+        success: false, 
+        xp_points: 0 
+      };
     }
   },
   getUserTournaments: async () => {

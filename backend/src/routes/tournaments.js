@@ -38,7 +38,41 @@ const authenticate = (req, res, next) => {
     res.status(401).json({ success: false, error: 'Invalid token' });
   }
 };
-
+// Add this route to your tournaments.js file (anywhere before module.exports)
+router.get('/:id/debug-state', async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT * FROM tournaments WHERE id = ?
+    `, [tournamentId]);
+    
+    // Get all participants
+    const [participants] = await db.execute(`
+      SELECT * FROM tournament_participants WHERE tournament_id = ?
+    `, [tournamentId]);
+    
+    // Get squad count
+    const [squadCount] = await db.execute(`
+      SELECT COUNT(DISTINCT group_id) as squad_count 
+      FROM tournament_participants 
+      WHERE tournament_id = ? AND group_id IS NOT NULL AND status = 'joined'
+    `, [tournamentId]);
+    
+    res.json({
+      success: true,
+      tournament: tournaments[0] || null,
+      participants: participants || [],
+      squad_count: squadCount[0]?.squad_count || 0,
+      total_participants: participants.length,
+      has_max_squads: tournaments[0]?.max_squads !== undefined,
+      has_max_groups: tournaments[0]?.max_groups !== undefined
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // ============================
 // SPECIFIC ROUTES FIRST (CRITICAL!)
 // ============================
@@ -573,6 +607,147 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
     }
   }
 });
+// POST /api/tournaments/:id/kick-group - Remove group from tournament (Creator only)
+router.post('/:id/kick-group', authenticate, async (req, res) => {
+  let connection;
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+    const { group_id } = req.body;
+
+    console.log('👢 Removing group from tournament:', { tournamentId, group_id, userId });
+
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT t.*, COUNT(tp.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Tournament not found'
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check permissions - only creator can kick groups
+    if (parseInt(tournament.creator_id) !== parseInt(userId)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only tournament creator can remove groups'
+      });
+    }
+
+    if (tournament.status !== 'upcoming') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot remove groups after tournament has started'
+      });
+    }
+
+    // Check if group exists in tournament
+    const [groupInTournament] = await db.execute(`
+      SELECT DISTINCT group_id, COUNT(*) as member_count 
+      FROM tournament_participants 
+      WHERE tournament_id = ? AND group_id = ? AND status = 'joined'
+      GROUP BY group_id
+    `, [tournamentId, group_id]);
+
+    if (groupInTournament.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Group not found in tournament'
+      });
+    }
+
+    // Get connection for transaction
+    connection = await db.pool.promise().getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Get group members to notify
+      const [groupMembers] = await connection.query(`
+        SELECT tp.user_id, u.username, u.email
+        FROM tournament_participants tp
+        JOIN users u ON tp.user_id = u.id
+        WHERE tp.tournament_id = ? AND tp.group_id = ? AND tp.status = 'joined'
+      `, [tournamentId, group_id]);
+
+      // Remove all group members from tournament
+      await connection.query(`
+        UPDATE tournament_participants 
+        SET status = 'declined'
+        WHERE tournament_id = ? AND group_id = ? AND status = 'joined'
+      `, [tournamentId, group_id]);
+
+      // Refund XP entry fee to each member
+      if (tournament.xp_entry_fee > 0) {
+        for (const member of groupMembers) {
+          await connection.query(
+            `UPDATE users SET xp_points = xp_points + ? WHERE id = ?`,
+            [tournament.xp_entry_fee, member.user_id]
+          );
+
+          // Record XP refund transaction
+          await connection.query(
+            `INSERT INTO xp_transactions (user_id, tournament_id, amount, type, description)
+             VALUES (?, ?, ?, 'refund', ?)`,
+            [member.user_id, tournamentId, tournament.xp_entry_fee, `Refund for group removal: ${tournament.name}`]
+          );
+        }
+      }
+
+      // Send notifications to removed members
+      const [creator] = await connection.query(
+        `SELECT username FROM users WHERE id = ?`,
+        [userId]
+      );
+
+      for (const member of groupMembers) {
+        await connection.query(`
+          INSERT INTO notifications (user_id, sender_id, message, type, status, tournament_id, created_at)
+          VALUES (?, ?, ?, 'system', 'unread', ?, NOW())
+        `, [
+          member.user_id,
+          userId,
+          `Your group has been removed from tournament "${tournament.name}" by ${creator[0]?.username || 'tournament admin'}. ${tournament.xp_entry_fee > 0 ? 'XP entry fee has been refunded.' : ''}`,
+          tournamentId
+        ]);
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: 'Group removed successfully',
+        members_removed: groupMembers.length,
+        xp_refunded: tournament.xp_entry_fee > 0 ? groupMembers.length * tournament.xp_entry_fee : 0,
+        group_id: group_id
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Remove group error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to remove group: ' + error.message
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
 
 // POST /api/tournaments/:id/complete - Manually complete tournament (admin/creator)
 router.post('/:id/complete', authenticate, async (req, res) => {
@@ -951,15 +1126,41 @@ router.get('/:id/bracket', authenticate, async (req, res) => {
 // TOURNAMENT JOIN ROUTE (UPDATED FOR XP)
 // ============================
 
-// POST /api/tournaments/:id/join - Join tournament (UPDATED)
+// POST /api/tournaments/:id/join - Join tournament (FIXED SCOPE ISSUE)
 router.post('/:id/join', authenticate, async (req, res) => {
   let connection;
+  let groupMembers = []; // DECLARE groupMembers HERE for proper scope
+  
   try {
     const tournamentId = req.params.id;
     const userId = req.user.id;
     const { group_id, squad_name } = req.body; // For squad tournaments
 
     console.log('👥 Join request:', { tournamentId, userId, group_id });
+
+    // ==================== DEBUGGING: CHECK CURRENT DATABASE STATE ====================
+    console.log('🔍 [DEBUG] Checking database state before join attempt...');
+    
+    // Check tournament details
+    const [tournamentCheck] = await db.execute(`
+      SELECT id, name, type, max_players, max_squads, max_groups, status
+      FROM tournaments WHERE id = ?
+    `, [tournamentId]);
+    
+    // Check current participants
+    const [participantsCheck] = await db.execute(`
+      SELECT user_id, group_id, status 
+      FROM tournament_participants 
+      WHERE tournament_id = ?
+    `, [tournamentId]);
+    
+    console.log('🔍 [DEBUG] Database state:', {
+      tournamentExists: tournamentCheck.length > 0,
+      tournament: tournamentCheck[0],
+      totalParticipants: participantsCheck.length,
+      participants: participantsCheck
+    });
+    // ==================== END DEBUGGING ====================
 
     // Get tournament details
     const [tournaments] = await db.execute(`
@@ -1014,7 +1215,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
       // Check if group already in tournament
       const [groupInTournament] = await db.execute(`
         SELECT 1 FROM tournament_participants 
-        WHERE tournament_id = ? AND group_id = ?
+        WHERE tournament_id = ? AND group_id = ? AND status = 'joined'
         LIMIT 1
       `, [tournamentId, group_id]);
 
@@ -1026,12 +1227,12 @@ router.post('/:id/join', authenticate, async (req, res) => {
       }
 
       // Check group size (1-5 members)
-      const [groupMembers] = await db.execute(`
+      const [groupMembersCheck] = await db.execute(`
         SELECT COUNT(*) as member_count FROM group_members 
         WHERE group_id = ? AND status = 'joined'
       `, [group_id]);
 
-      if (groupMembers[0].member_count < 1 || groupMembers[0].member_count > 5) {
+      if (groupMembersCheck[0].member_count < 1 || groupMembersCheck[0].member_count > 5) {
         return res.status(400).json({
           success: false,
           error: 'Group must have 1-5 members'
@@ -1058,19 +1259,83 @@ router.post('/:id/join', authenticate, async (req, res) => {
         });
       }
 
-      // Check max squads
+      // ==================== FIXED SQUAD COUNT LOGIC ====================
+      console.log('🔍 [DEBUG] Starting squad capacity check...');
+      
+      // Check current squads - FIXED QUERY
       const [currentSquads] = await db.execute(`
         SELECT COUNT(DISTINCT group_id) as squad_count 
         FROM tournament_participants 
-        WHERE tournament_id = ? AND group_id IS NOT NULL
+        WHERE tournament_id = ? 
+          AND group_id IS NOT NULL 
+          AND status = 'joined'
       `, [tournamentId]);
 
-      if (currentSquads[0].squad_count >= tournament.max_squads) {
+      console.log('🔍 [DEBUG] Squad count query result:', {
+        rawResult: currentSquads[0],
+        tournamentId: tournamentId,
+        query: 'COUNT DISTINCT group_id WHERE status = joined'
+      });
+
+      // Get actual list of registered groups for debugging
+      const [registeredGroups] = await db.execute(`
+        SELECT DISTINCT group_id, 
+               COUNT(*) as member_count,
+               MIN(created_at) as first_joined
+        FROM tournament_participants 
+        WHERE tournament_id = ? 
+          AND group_id IS NOT NULL 
+          AND status = 'joined'
+        GROUP BY group_id
+      `, [tournamentId]);
+
+      console.log('🔍 [DEBUG] Registered groups detail:', {
+        groups: registeredGroups,
+        totalGroups: registeredGroups.length
+      });
+
+      // Handle both max_squads and max_groups columns
+      const maxSquads = tournament.max_squads || tournament.max_groups || 8;
+      const currentSquadCount = currentSquads[0]?.squad_count || 0;
+
+      console.log('🔍 [DEBUG] Capacity calculation:', {
+        tournamentId: tournamentId,
+        tournamentName: tournament.name,
+        tournamentType: tournament.type,
+        maxSquadsFromDB: tournament.max_squads,
+        maxGroupsFromDB: tournament.max_groups,
+        maxSquadsUsed: maxSquads,
+        currentSquadCount: currentSquadCount,
+        registeredGroupsCount: registeredGroups.length,
+        isFull: currentSquadCount >= maxSquads,
+        tournamentData: tournament
+      });
+
+      // ==================== TEMPORARY DEBUG - ALWAYS ALLOW ====================
+      // COMMENT THIS OUT AFTER DEBUGGING
+      console.log('⚠️ [DEBUG] Temporarily bypassing squad limit check for testing');
+      /*
+      if (currentSquadCount >= maxSquads) {
         return res.status(400).json({
           success: false,
-          error: 'Tournament has reached maximum number of squads'
+          error: `Tournament is full. ${currentSquadCount}/${maxSquads} squads already registered.`,
+          debug_info: {
+            tournament_id: tournamentId,
+            tournament_name: tournament.name,
+            current_squads: currentSquadCount,
+            max_squads: maxSquads,
+            registered_groups: registeredGroups.map(g => ({
+              group_id: g.group_id,
+              members: g.member_count,
+              first_joined: g.first_joined
+            })),
+            tournament_type: tournament.type,
+            query_used: 'COUNT(DISTINCT group_id) WHERE status = joined'
+          }
         });
       }
+      */
+      // ==================== END TEMPORARY DEBUG ====================
     }
 
     // For non-squad tournaments
@@ -1078,7 +1343,7 @@ router.post('/:id/join', authenticate, async (req, res) => {
       // Check if user already joined
       const [existing] = await db.execute(
         `SELECT * FROM tournament_participants 
-         WHERE tournament_id = ? AND user_id = ?`,
+         WHERE tournament_id = ? AND user_id = ? AND status = 'joined'`,
         [tournamentId, userId]
       );
 
@@ -1090,8 +1355,8 @@ router.post('/:id/join', authenticate, async (req, res) => {
       }
     }
 
-    // Check tournament capacity
-    if (tournament.participants_count >= tournament.max_players) {
+    // Check tournament capacity (for non-squad tournaments)
+    if (tournament.type !== 'squad' && tournament.participants_count >= tournament.max_players) {
       return res.status(400).json({
         success: false,
         error: 'Tournament is full'
@@ -1141,11 +1406,19 @@ router.post('/:id/join', authenticate, async (req, res) => {
 
       // Add participant(s)
       if (tournament.type === 'squad') {
-        // Add all group members
-        const [groupMembers] = await connection.query(`
+        // Get group members
+        const [membersResult] = await connection.query(`
           SELECT user_id FROM group_members 
           WHERE group_id = ? AND status = 'joined'
         `, [group_id]);
+        
+        groupMembers = membersResult; // Assign to the outer variable
+
+        console.log('🔍 [DEBUG] Adding group members to tournament:', {
+          groupId: group_id,
+          memberCount: groupMembers.length,
+          members: groupMembers
+        });
 
         for (const member of groupMembers) {
           await connection.query(
@@ -1169,6 +1442,13 @@ router.post('/:id/join', authenticate, async (req, res) => {
             );
           }
         }
+        
+        console.log('✅ [DEBUG] Successfully registered squad:', {
+          tournamentId: tournamentId,
+          groupId: group_id,
+          squadName: squad_name,
+          membersAdded: groupMembers.length
+        });
       } else {
         // Add individual participant
         await connection.query(
@@ -1198,11 +1478,17 @@ router.post('/:id/join', authenticate, async (req, res) => {
         message: tournament.type === 'squad' 
           ? 'Squad registered successfully!' 
           : 'Successfully joined tournament!',
-        xp_deducted: xpEntryFee
+        xp_deducted: xpEntryFee,
+        debug: tournament.type === 'squad' ? {
+          group_id: group_id,
+          members_added: groupMembers.length,
+          squad_name: squad_name
+        } : null
       });
 
     } catch (error) {
       await connection.rollback();
+      console.error('❌ Transaction error:', error);
       throw error;
     }
 
@@ -1210,7 +1496,12 @@ router.post('/:id/join', authenticate, async (req, res) => {
     console.error('❌ Join tournament error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to join tournament: ' + error.message
+      error: 'Failed to join tournament: ' + error.message,
+      debug: {
+        tournamentId: req.params.id,
+        userId: req.user?.id,
+        errorType: error.name
+      }
     });
   } finally {
     if (connection) {
@@ -1522,23 +1813,23 @@ router.post('/', authenticate, async (req, res) => {
 
       if (finalAdminMonitoring) {
         // Add creator as tournament admin with full access
-        await connection.query(`
-          INSERT INTO tournament_admins (
-            tournament_id, admin_id, role, added_by, permissions, created_at
-          ) VALUES (?, ?, 'full_access', ?, ?, NOW())
-        `, [
-          tournamentId,
-          userId,
-          userId,
-          JSON.stringify({
-            monitor_matches: true,
-            resolve_disputes: true,
-            override_results: true,
-            kick_players: true,
-            distribute_prizes: true,
-            modify_tournament: true
-          })
-        ]);
+       await connection.query(`
+  INSERT INTO tournament_admins (
+    tournament_id, admin_id, role, added_by, permissions
+  ) VALUES (?, ?, 'full_access', ?, ?)
+`, [
+  tournamentId,
+  userId,
+  userId,
+  JSON.stringify({
+    monitor_matches: true,
+    resolve_disputes: true,
+    override_results: true,
+    kick_players: true,
+    distribute_prizes: true,
+    modify_tournament: true
+  })
+]);
 
         console.log(`🛡️ Added creator as tournament admin with full access`);
 
@@ -1671,17 +1962,18 @@ router.post('/:id/start', authenticate, async (req, res) => {
     }
 
     // Check if tournament exists and user is creator
-    const [tournaments] = await db.execute(`
-      SELECT t.*, 
-             COUNT(tp.id) as participants_count,
-             u.username as creator_name
-      FROM tournaments t
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      LEFT JOIN users u ON t.creator_id = u.id
-      WHERE t.id = ? 
-      GROUP BY t.id
-    `, [tournamentId]);
+   // Check if tournament exists and user is creator
+const [tournaments] = await db.execute(`
+  SELECT t.*, 
+         COUNT(tp.id) as participants_count,
+         u.username as creator_name
+  FROM tournaments t
+  LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+    AND tp.status = 'joined'
+  LEFT JOIN users u ON t.creator_id = u.id
+  WHERE t.id = ?
+  GROUP BY t.id
+`, [tournamentId]);
 
     console.log('✅ Tournament query result:', {
       found: tournaments.length > 0,
@@ -1851,15 +2143,16 @@ router.post('/:id/start', authenticate, async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const [tournaments] = await db.execute(`
-      SELECT t.*, u.username as creator_name, 
-             COUNT(tp.id) as current_players
-      FROM tournaments t
-      LEFT JOIN users u ON t.creator_id = u.id
-      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
-        AND tp.status = 'joined'
-      WHERE t.status != 'cancelled'
-      GROUP BY t.id
-      ORDER BY t.created_at DESC
+      SELECT t.*, u.username as creator_name,
+       COUNT(DISTINCT CASE WHEN t.type = 'squad' THEN NULL ELSE tp.user_id END) as current_players,
+       COUNT(DISTINCT CASE WHEN t.type = 'squad' THEN tp.group_id ELSE NULL END) as current_squads
+FROM tournaments t
+LEFT JOIN users u ON t.creator_id = u.id
+LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+  AND tp.status = 'joined'
+WHERE t.status != 'cancelled'
+GROUP BY t.id
+ORDER BY t.created_at DESC
     `);
 
     res.json({

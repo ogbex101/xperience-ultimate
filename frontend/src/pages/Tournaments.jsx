@@ -259,15 +259,18 @@ const Tournaments = () => {
                       <div className="flex items-center space-x-2 text-gray-400">
                         <Users className="w-4 h-4" />
                         <span>
-                          {tournament.type === 'squad' ? 'Squads' : 'Players'}
-                        </span>
+  {tournament.type === 'squad' 
+    ? `${tournament.current_squads || 0}/${tournament.max_squads || tournament.max_groups || 8}`
+    : `${tournament.current_players || 0}/${tournament.max_players}`
+  }
+</span>
                       </div>
                       <span className="text-white">
-                        {tournament.type === 'squad' 
-                          ? `${tournament.current_squads || 0}/${tournament.max_squads || 8}`
-                          : `${tournament.current_players || 0}/${tournament.max_players}`
-                        }
-                      </span>
+  {tournament.type === 'squad' 
+    ? `${tournament.current_squads || 0}/${tournament.max_squads || 8}`
+    : `${tournament.current_players || 0}/${tournament.max_players}`
+  }
+</span>
                     </div>
 
                     <div className="flex items-center justify-between text-sm">

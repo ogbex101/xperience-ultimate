@@ -92,52 +92,85 @@ const CreateTournament = () => {
     { value: 'voting', label: 'Community Voting', description: 'Tournament participants vote' }
   ]
 
-  useEffect(() => {
-    const fetchUserData = async () => {
-      if (!user) return
-      
-      try {
-        // Check if user is admin
-        setIsAdmin(user.is_admin || false)
-        
-        // ✅ OPTION A: Use the new getUserProfile endpoint
-        const userResponse = await tournamentsAPI.getUserProfile()
-        console.log('🔄 User profile response:', userResponse)
-        
-        if (userResponse.success && userResponse.data) {
-          // Handle both response structures
-          const xpBalance = userResponse.data.xp_points || 
-                           userResponse.data.user?.xp_points || 
-                           userResponse.xp_points || 
-                           0
-          setXpBalance(xpBalance)
-          console.log('✅ XP balance set to:', xpBalance)
-        } else {
-          console.warn('⚠️ Could not fetch XP, using 0')
-          setXpBalance(0)
-        }
-        
-        // ✅ OPTION B: Direct XP fetch (simpler)
-        // const xpResponse = await tournamentsAPI.getUserXP()
-        // setXpBalance(xpResponse.xp_points || 0)
-        
-        // Fetch user's admin groups for squad tournaments
-        setLoadingGroups(true)
-        const groupsResponse = await tournamentsAPI.getUserGroups()
-        if (groupsResponse.success) {
-          setUserGroups(groupsResponse.groups || [])
-        }
-        setLoadingGroups(false)
-        
-      } catch (error) {
-        console.error('Error fetching user data:', error)
-        // Set default XP if fetch fails
-        setXpBalance(0)
-      }
-    }
+  // In CreateTournament.jsx useEffect, replace the XP fetching part:
+
+// In CreateTournament.jsx useEffect:
+
+useEffect(() => {
+  const fetchUserData = async () => {
+    if (!user) return;
     
-    fetchUserData()
-  }, [user])
+    try {
+      // Check if user is admin
+      setIsAdmin(user.is_admin || false);
+      
+      // ✅ FIX: Use tournamentsAPI.getUserProfile() which already exists
+      try {
+        const response = await tournamentsAPI.getUserProfile();
+        console.log('🎮 getUserProfile response:', response);
+        
+        // Handle different response structures
+        if (response.success && response.data) {
+          // Structure 1: {success: true, data: {user: {xp_points: ...}}}
+          const xpPoints = response.data.user?.xp_points || 
+                          response.data.xp_points || 
+                          response.xp_points || 
+                          0;
+          setXpBalance(xpPoints);
+          console.log('✅ XP balance set to:', xpPoints);
+        } else if (response.xp_points !== undefined) {
+          // Structure 2: {success: true, xp_points: ...}
+          setXpBalance(response.xp_points);
+        } else {
+          console.warn('⚠️ Unexpected response structure:', response);
+          setXpBalance(0);
+        }
+      } catch (xpError) {
+        console.error('❌ Error fetching XP via getUserProfile:', xpError);
+        
+        // Fallback: Try getUserXP method
+        try {
+          const xpResponse = await tournamentsAPI.getUserXP();
+          console.log('🔄 getUserXP response:', xpResponse);
+          
+          if (xpResponse.success) {
+            setXpBalance(xpResponse.xp_points || 0);
+          } else {
+            setXpBalance(0);
+          }
+        } catch (fallbackError) {
+          console.error('❌ Fallback XP fetch also failed:', fallbackError);
+          setXpBalance(0);
+        }
+      }
+      
+      // Fetch user's admin groups for squad tournaments
+      setLoadingGroups(true);
+      try {
+        const groupsResponse = await tournamentsAPI.getUserGroups();
+        console.log('👥 getUserGroups response:', groupsResponse);
+        
+        if (groupsResponse.success) {
+          setUserGroups(groupsResponse.groups || []);
+        } else {
+          console.error('Groups fetch failed:', groupsResponse);
+          setUserGroups([]);
+        }
+      } catch (groupError) {
+        console.error('❌ Error fetching groups:', groupError);
+        setUserGroups([]);
+      } finally {
+        setLoadingGroups(false);
+      }
+      
+    } catch (error) {
+      console.error('❌ Error in fetchUserData:', error);
+      setXpBalance(0);
+    }
+  };
+  
+  fetchUserData();
+}, [user]);
 
   const handleChange = (e) => {
     const { name, value, type } = e.target

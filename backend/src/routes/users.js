@@ -16,11 +16,48 @@ const updateProfileSchema = Joi.object({
 const setPinSchema = Joi.object({
   pin: Joi.string().length(4).pattern(/^\d+$/).required()
 });
+// GET /api/users/me/xp - Get user XP balance (simple endpoint)
+router.get('/me/xp', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const [users] = await db.execute(
+      `SELECT id, username, xp_points FROM users WHERE id = ?`,
+      [userId]
+    );
 
-// GET /api/users/profile-with-xp - Get user profile with XP
+    if (users.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      xp_points: users[0].xp_points || 0,
+      user_id: users[0].id
+    });
+  } catch (error) {
+    console.error('Get XP balance error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch XP balance' 
+    });
+  }
+});
+// In users.js, update the /profile-with-xp endpoint:
+
 router.get('/profile-with-xp', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    
+    console.log('🎯 /profile-with-xp called for user:', userId);
+    
+    // ADD CACHE CONTROL HEADERS
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     
     const [users] = await db.execute(
       `SELECT id, username, email, profile_pic, rank,
@@ -38,22 +75,73 @@ router.get('/profile-with-xp', authenticateToken, async (req, res) => {
       });
     }
 
+    const userData = users[0];
+    console.log('📊 User XP points from DB:', userData.xp_points);
+    
     res.json({
       success: true,
       data: {
-        user: users[0],
-        xp_points: users[0].xp_points
-      }
+        user: userData,
+        xp_points: userData.xp_points
+      },
+      xp_points: userData.xp_points,
+      message: 'Profile with XP fetched successfully',
+      timestamp: new Date().toISOString() // Add timestamp to prevent caching
     });
+    
   } catch (error) {
-    console.error('Get profile with XP error:', error);
+    console.error('❌ Get profile with XP error:', error);
     res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch profile with XP' 
+      error: 'Failed to fetch profile with XP',
+      debug: error.message
     });
   }
 });
+// GET /api/users/xp - Get only XP balance (simple)
+router.get('/xp', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    console.log('💰 /xp endpoint called for user:', userId);
+    
+    // ADD CACHE CONTROL HEADERS
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    const [users] = await db.execute(
+      `SELECT xp_points FROM users WHERE id = ?`,
+      [userId]
+    );
 
+    if (users.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    const xpBalance = users[0].xp_points || 0;
+    console.log('💰 XP balance:', xpBalance);
+    
+    res.json({
+      success: true,
+      xp_points: xpBalance,
+      user_id: userId,
+      formatted_xp: xpBalance.toLocaleString(),
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Get XP error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch XP balance',
+      xp_points: 0
+    });
+  }
+});
 // SEARCH USERS - MOVED HERE (BEFORE :id routes)
 router.get('/search', authenticateToken, async (req, res) => {
   try {
