@@ -29,12 +29,12 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = {
-      id: users[0].id,
-      userId: users[0].id, // Set both id and userId for compatibility
-      username: users[0].username,
-      email: users[0].email,
-      is_admin: users[0].is_admin
-    };
+  id: users[0].id,
+  userId: users[0].id,
+  username: users[0].username,
+  email: users[0].email,
+  is_admin: users[0].is_admin === 1 || users[0].is_admin === true // ← FIX HERE
+};
     
     next();
   } catch (error) {

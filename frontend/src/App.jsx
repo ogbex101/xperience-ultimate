@@ -41,6 +41,7 @@ import GroupsManagement from './pages/admin/GroupsManagement';
 import ReportsAnalytics from './pages/admin/ReportsAnalytics';
 import AdminManagement from './pages/admin/AdminManagement';
 import NotificationsPage from './pages/NotificationsPage';
+import Leaderboard from './pages/Leaderboard.jsx';
 
 // ============ ADMIN LAYOUT ============
 import AdminLayout from './components/admin/AdminLayout';
@@ -162,7 +163,12 @@ function App() {
                   <TournamentDetails />
                 </ProtectedRoute>
               } />
-              
+              // ADD LEADERBOARD ROUTE HERE
+<Route path="/leaderboard" element={
+  <ProtectedRoute>
+    <Leaderboard />
+  </ProtectedRoute>
+} />
               <Route path="/matches/create" element={
                 <ProtectedRoute>
                   <CreateMatch />

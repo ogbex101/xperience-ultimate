@@ -17,6 +17,7 @@ const friendsRoutes = require('./src/routes/friends');
 const groupsRoutes = require('./src/routes/groups');
 const chatRoutes = require('./src/routes/chat');
 const adminRoutes = require('./src/routes/admin');
+const leaderboardRoutes = require('./src/routes/leaderboard');
 // Import wallet routes
 const walletRoutes = require('./src/routes/wallet');
 
@@ -83,6 +84,7 @@ app.use('/uploads', express.static('uploads'));
 
 // 1. Public routes (NO authentication required)
 app.use('/api/auth', authRoutes);
+app.use('/api/leaderboard', leaderboardRoutes);
 // Add this line with other route registrations
 app.use('/api/suggested-players', authenticateToken, suggestedPlayersRoutes);
 app.use('/api/matches', authenticateToken, matchChatRoutes);

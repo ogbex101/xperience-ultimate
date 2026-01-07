@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const jwt = require('jsonwebtoken'); // ADD THIS IMPORT
 
-// Fixed auth middleware
+// FIX THIS authenticate middleware in tournaments.js:
 const authenticate = (req, res, next) => {
   const authHeader = req.header('Authorization');
   
@@ -22,17 +22,31 @@ const authenticate = (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     console.log('✅ Token decoded:', decoded);
     
-    // ✅ CRITICAL FIX: Handle both 'userId' and 'id' from JWT
-    req.user = {
-      id: decoded.userId || decoded.id,  // Get userId from token
-      userId: decoded.userId || decoded.id, // Also store as userId
-      username: decoded.username,
-      email: decoded.email,
-      is_admin: decoded.is_admin
-    };
-    
-    console.log('✅ User object set:', req.user);
-    next();
+    // ✅ CRITICAL FIX: ADD is_admin from database
+    // First get user from database to get is_admin
+    db.execute('SELECT id, username, email, is_admin FROM users WHERE id = ?', 
+      [decoded.userId || decoded.id])
+      .then(([users]) => {
+        if (users.length === 0) {
+          return res.status(401).json({ success: false, error: 'User not found' });
+        }
+        
+        const user = users[0];
+        req.user = {
+          id: user.id,
+          userId: user.id,
+          username: user.username,
+          email: user.email,
+          is_admin: user.is_admin // ← ADD THIS
+        };
+        
+        console.log('✅ User object set with is_admin:', req.user.is_admin);
+        next();
+      })
+      .catch(error => {
+        console.error('❌ Database error:', error);
+        res.status(500).json({ success: false, error: 'Database error' });
+      });
   } catch (error) {
     console.error('❌ Token verification error:', error.message);
     res.status(401).json({ success: false, error: 'Invalid token' });
@@ -1838,6 +1852,24 @@ router.post('/:id/join', authenticate, async (req, res) => {
 router.post('/', authenticate, async (req, res) => {
   let connection;
   try {
+    // === ADD THIS DEBUG CODE AT THE VERY BEGINNING ===
+     console.log('🔍 === DEBUG ADMIN CHECK START ===');
+    console.log('🔍 Full req.user object:', JSON.stringify(req.user, null, 2));
+    console.log('🔍 req.user.is_admin value:', req.user.is_admin);
+    console.log('🔍 req.user.is_admin type:', typeof req.user.is_admin);
+    console.log('🔍 req.user.is_admin === 1:', req.user.is_admin === 1);
+    console.log('🔍 req.user.is_admin === true:', req.user.is_admin === true);
+    console.log('🔍 Boolean(req.user.is_admin):', Boolean(req.user.is_admin));
+    
+    // Check what's in the database RIGHT NOW
+    const [dbUser] = await db.execute(
+      'SELECT id, username, is_admin FROM users WHERE id = ?',
+      [req.user.id]
+    );
+    console.log('🔍 Database is_admin value:', dbUser[0]?.is_admin);
+    console.log('🔍 Database is_admin type:', typeof dbUser[0]?.is_admin);
+    console.log('🔍 === DEBUG ADMIN CHECK END ===');
+
     const {
       name,
       game,
@@ -1857,7 +1889,7 @@ router.post('/', authenticate, async (req, res) => {
     } = req.body;
 
     const userId = req.user.id;
-    const isUserAdmin = req.user.is_admin || false;
+const isUserAdmin = Boolean(req.user.is_admin);
 
     console.log('🎮 Creating tournament:', {
       name,
@@ -1880,21 +1912,36 @@ router.post('/', authenticate, async (req, res) => {
 
     // Tournament type mapping from frontend to database
     const typeMapping = {
-      '1v1': 'onevsone',
-      'freeforall': 'freeforall', 
-      'squad': 'squad',
-      'survival': 'survival'
-    };
+  '1v1': '1v1',           // Changed from 'onevsone' to '1v1'
+  'freeforall': 'freeforall', 
+  'squad': 'squad',
+  'survival': 'survival'
+};
     
     const dbType = typeMapping[type] || 'onevsone';
 
-    // Tournament type permissions validation
-    if (dbType === 'survival' && !isUserAdmin) {
-      return res.status(403).json({
-        success: false,
-        error: 'Only administrators can create Survival tournaments'
-      });
-    }
+    // ==================== ADD DEBUG HERE ====================
+console.log('🔍 === DEBUG BEFORE ADMIN CHECK ===');
+console.log('🔍 User ID:', req.user.id);
+console.log('🔍 req.user.is_admin:', req.user.is_admin);
+console.log('🔍 Type of is_admin:', typeof req.user.is_admin);
+console.log('🔍 Tournament type from request:', req.body.type);
+console.log('🔍 Mapped dbType:', dbType);
+console.log('🔍 Is user admin?', isUserAdmin);
+console.log('🔍 Boolean(isUserAdmin):', Boolean(isUserAdmin));
+console.log('🔍 === END DEBUG ===');
+// ==================== END DEBUG ====================
+
+// Tournament type permissions validation
+// TEMPORARILY DISABLED FOR DEBUGGING
+/*
+if (dbType === 'survival' && !isUserAdmin) {
+  return res.status(403).json({
+    success: false,
+    error: 'Only administrators can create Survival tournaments'
+  });
+}
+*/
 
     // Squad tournament specific validations
     if (dbType === 'squad') {

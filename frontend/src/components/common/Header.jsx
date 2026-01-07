@@ -13,6 +13,7 @@ import {
   History, 
   MessageSquare, 
   Bell,
+  BarChart3, // ← ADD THIS
   Shield,
   Home
 } from 'lucide-react'
@@ -26,6 +27,7 @@ const Header = () => {
     { path: '/', label: 'Home', icon: Home },
     { path: '/match-history', label: 'Matches', icon: History },
     { path: '/tournaments', label: 'Tournaments', icon: Trophy },
+     { path: '/leaderboard', label: 'Leaderboard', icon: BarChart3 },
     { path: '/groups', label: 'Groups', icon: Users },
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/wallet', label: 'Wallet', icon: Wallet },
