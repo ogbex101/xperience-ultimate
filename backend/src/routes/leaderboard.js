@@ -175,6 +175,8 @@ router.get('/players', async (req, res) => {
   }
 });
 
+// In your leaderboard.js backend file, update the /squads route:
+
 // GET /api/leaderboard/squads - Squad/group leaderboard
 router.get('/squads', async (req, res) => {
   try {
@@ -184,7 +186,7 @@ router.get('/squads', async (req, res) => {
     let query, params;
 
     if (game === 'all') {
-      // All squads leaderboard
+      // All squads leaderboard - FIXED: Removed status column check
       query = `
         SELECT 
           g.id,
@@ -194,30 +196,35 @@ router.get('/squads', async (req, res) => {
           g.creator_id,
           u.username as creator_name,
           u.profile_pic as creator_avatar,
-          COUNT(DISTINCT t.id) as tournaments_won,
-          COUNT(DISTINCT gm.user_id) as member_count,
-          COUNT(DISTINCT gm2.user_id) as admin_count,
-          COALESCE((
-            SELECT SUM(t2.prize_pool) 
-            FROM tournaments t2 
-            WHERE t2.winner_id = g.creator_id 
-              AND t2.type = 'squad' 
-              AND t2.status = 'completed'
-          ), 0) as total_prize_won,
-          MAX(t.completed_at) as latest_victory
+          COALESCE(t_stats.tournaments_won, 0) as tournaments_won,
+          COALESCE(gm_stats.member_count, 0) as member_count,
+          COALESCE(gm_stats.admin_count, 0) as admin_count,
+          COALESCE(t_stats.total_prize_won, 0) as total_prize_won,
+          t_stats.latest_victory
         FROM groups g
-        LEFT JOIN tournaments t ON t.winner_id = g.creator_id 
-          AND t.type = 'squad' 
-          AND t.status = 'completed'
-        LEFT JOIN group_members gm ON g.id = gm.group_id 
-          AND gm.status = 'joined'
-        LEFT JOIN group_members gm2 ON g.id = gm2.group_id 
-          AND gm2.role = 'admin' 
-          AND gm2.status = 'joined'
         LEFT JOIN users u ON g.creator_id = u.id
-        WHERE g.status = 'active'
-        GROUP BY g.id, g.name, g.game_specialty, g.description, g.creator_id, u.username, u.profile_pic
-        HAVING tournaments_won > 0
+        LEFT JOIN (
+          SELECT 
+            t.winner_id,
+            COUNT(DISTINCT t.id) as tournaments_won,
+            SUM(t.prize_pool) as total_prize_won,
+            MAX(t.completed_at) as latest_victory
+          FROM tournaments t
+          WHERE t.type = 'squad' 
+            AND t.status = 'completed'
+            AND t.winner_id IS NOT NULL
+          GROUP BY t.winner_id
+        ) t_stats ON g.creator_id = t_stats.winner_id
+        LEFT JOIN (
+          SELECT 
+            gm.group_id,
+            COUNT(DISTINCT gm.user_id) as member_count,
+            COUNT(DISTINCT CASE WHEN gm.role = 'admin' THEN gm.user_id END) as admin_count
+          FROM group_members gm
+          WHERE gm.status = 'joined'
+          GROUP BY gm.group_id
+        ) gm_stats ON g.id = gm_stats.group_id
+        -- REMOVED: WHERE g.status = 'active'
         ORDER BY 
           tournaments_won DESC,
           total_prize_won DESC,
@@ -227,7 +234,7 @@ router.get('/squads', async (req, res) => {
       `;
       params = [parseInt(limit), offset];
     } else {
-      // Game-specific squads leaderboard
+      // Game-specific squads leaderboard - FIXED: Removed status column check
       query = `
         SELECT 
           g.id,
@@ -237,33 +244,37 @@ router.get('/squads', async (req, res) => {
           g.creator_id,
           u.username as creator_name,
           u.profile_pic as creator_avatar,
-          COUNT(DISTINCT t.id) as tournaments_won,
-          COUNT(DISTINCT gm.user_id) as member_count,
-          COUNT(DISTINCT gm2.user_id) as admin_count,
-          COALESCE((
-            SELECT SUM(t2.prize_pool) 
-            FROM tournaments t2 
-            WHERE t2.winner_id = g.creator_id 
-              AND t2.type = 'squad' 
-              AND t2.status = 'completed'
-              AND t2.game = ?
-          ), 0) as total_prize_won,
-          MAX(t.completed_at) as latest_victory
+          COALESCE(t_stats.tournaments_won, 0) as tournaments_won,
+          COALESCE(gm_stats.member_count, 0) as member_count,
+          COALESCE(gm_stats.admin_count, 0) as admin_count,
+          COALESCE(t_stats.total_prize_won, 0) as total_prize_won,
+          t_stats.latest_victory
         FROM groups g
-        LEFT JOIN tournaments t ON t.winner_id = g.creator_id 
-          AND t.type = 'squad' 
-          AND t.status = 'completed'
-          AND t.game = ?
-        LEFT JOIN group_members gm ON g.id = gm.group_id 
-          AND gm.status = 'joined'
-        LEFT JOIN group_members gm2 ON g.id = gm2.group_id 
-          AND gm2.role = 'admin' 
-          AND gm2.status = 'joined'
         LEFT JOIN users u ON g.creator_id = u.id
-        WHERE g.status = 'active'
-          AND g.game_specialty = ?
-        GROUP BY g.id, g.name, g.game_specialty, g.description, g.creator_id, u.username, u.profile_pic
-        HAVING tournaments_won > 0
+        LEFT JOIN (
+          SELECT 
+            t.winner_id,
+            COUNT(DISTINCT t.id) as tournaments_won,
+            SUM(t.prize_pool) as total_prize_won,
+            MAX(t.completed_at) as latest_victory
+          FROM tournaments t
+          WHERE t.type = 'squad' 
+            AND t.status = 'completed'
+            AND t.game = ?
+            AND t.winner_id IS NOT NULL
+          GROUP BY t.winner_id
+        ) t_stats ON g.creator_id = t_stats.winner_id
+        LEFT JOIN (
+          SELECT 
+            gm.group_id,
+            COUNT(DISTINCT gm.user_id) as member_count,
+            COUNT(DISTINCT CASE WHEN gm.role = 'admin' THEN gm.user_id END) as admin_count
+          FROM group_members gm
+          WHERE gm.status = 'joined'
+          GROUP BY gm.group_id
+        ) gm_stats ON g.id = gm_stats.group_id
+        WHERE g.game_specialty = ?
+        -- REMOVED: AND g.status = 'active'
         ORDER BY 
           tournaments_won DESC,
           total_prize_won DESC,
@@ -271,29 +282,17 @@ router.get('/squads', async (req, res) => {
           latest_victory DESC
         LIMIT ? OFFSET ?
       `;
-      params = [game, game, game, parseInt(limit), offset];
+      params = [game, game, parseInt(limit), offset];
     }
 
     const [squads] = await db.execute(query, params);
 
-    // Get total count
+    // Get total count - FIXED: Removed status check
     const countQuery = game === 'all'
-      ? `SELECT COUNT(DISTINCT g.id) as total 
-         FROM groups g
-         JOIN tournaments t ON t.winner_id = g.creator_id 
-           AND t.type = 'squad' 
-           AND t.status = 'completed'
-         WHERE g.status = 'active'`
-      : `SELECT COUNT(DISTINCT g.id) as total 
-         FROM groups g
-         JOIN tournaments t ON t.winner_id = g.creator_id 
-           AND t.type = 'squad' 
-           AND t.status = 'completed'
-           AND t.game = ?
-         WHERE g.status = 'active' 
-           AND g.game_specialty = ?`;
+      ? `SELECT COUNT(*) as total FROM groups`  // Removed WHERE status = 'active'
+      : `SELECT COUNT(*) as total FROM groups WHERE game_specialty = ?`;  // Removed status check
     
-    const countParams = game === 'all' ? [] : [game, game];
+    const countParams = game === 'all' ? [] : [game];
     const [[{ total }]] = await db.execute(countQuery, countParams);
 
     res.json({
@@ -313,9 +312,10 @@ router.get('/squads', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Get squads leaderboard error:', error);
+    console.error('❌ SQL Error details:', error.sqlMessage);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch squads leaderboard'
+      error: 'Failed to fetch squads leaderboard: ' + error.message
     });
   }
 });
@@ -657,44 +657,62 @@ router.get('/user-position', async (req, res) => {
         total = total_players;
       }
     } else if (type === 'squads') {
-      // Squad position logic
-      const [squad] = await db.execute(`
-        SELECT g.id 
+  const [squad] = await db.execute(`
+    SELECT g.id 
+    FROM groups g
+    WHERE g.creator_id = ?
+    LIMIT 1
+  `, [userId]);
+
+  if (squad.length > 0) {
+    const squadId = squad[0].id;
+    
+    // Simple query that works
+    let position = null;
+    let totalSquads = 0;
+    
+    if (game === 'all') {
+      const [allSquads] = await db.execute(`
+        SELECT 
+          g.id,
+          COUNT(DISTINCT t.id) as win_count
         FROM groups g
-        WHERE g.creator_id = ?
-        LIMIT 1
-      `, [userId]);
-
-      if (squad.length > 0) {
-        const squadId = squad[0].id;
-        
-        if (game === 'all') {
-          const [rankings] = await db.execute(`
-            SELECT 
-              position 
-            FROM (
-              SELECT 
-                g.id,
-                @rownum := @rownum + 1 AS position
-              FROM groups g, (SELECT @rownum := 0) r
-              LEFT JOIN tournaments t ON t.winner_id = g.creator_id 
-                AND t.type = 'squad' 
-                AND t.status = 'completed'
-              WHERE g.status = 'active'
-              GROUP BY g.id
-              HAVING COUNT(DISTINCT t.id) > 0
-              ORDER BY 
-                COUNT(DISTINCT t.id) DESC,
-                COALESCE(SUM(t.prize_pool), 0) DESC,
-                COUNT(DISTINCT gm.user_id) DESC
-            ) ranked_squads 
-            WHERE id = ?
-          `, [squadId]);
-
-          position = rankings.length > 0 ? rankings[0].position : null;
-        }
-      }
+        LEFT JOIN tournaments t ON g.creator_id = t.winner_id 
+          AND t.type = 'squad' 
+          AND t.status = 'completed'
+        -- REMOVED: WHERE g.status = 'active'
+        GROUP BY g.id
+        ORDER BY win_count DESC, g.created_at ASC
+      `);
+      
+      position = allSquads.findIndex(s => s.id === squadId) + 1;
+      if (position === 0) position = null;
+      totalSquads = allSquads.length;
+      
+    } else {
+      const [allSquads] = await db.execute(`
+        SELECT 
+          g.id,
+          COUNT(DISTINCT t.id) as win_count
+        FROM groups g
+        LEFT JOIN tournaments t ON g.creator_id = t.winner_id 
+          AND t.type = 'squad' 
+          AND t.status = 'completed'
+          AND t.game = ?
+        WHERE g.game_specialty = ?
+        -- REMOVED: AND g.status = 'active'
+        GROUP BY g.id
+        ORDER BY win_count DESC, g.created_at ASC
+      `, [game, game]);
+      
+      position = allSquads.findIndex(s => s.id === squadId) + 1;
+      if (position === 0) position = null;
+      totalSquads = allSquads.length;
     }
+    
+    total = totalSquads;
+  }
+}
 
     res.json({
       success: true,

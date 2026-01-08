@@ -480,48 +480,48 @@ const tournamentsAPI = {
     return await api.post(`/tournaments/${tournamentId}/leave`);
   }
 };
-// Leaderboard API functions
+
+// TO THIS (FIXED):
 const leaderboardAPI = {
   // Get player leaderboard
   getPlayers: (params = {}) => {
     const queryParams = new URLSearchParams(params).toString();
-    return axios.get(`/api/leaderboard/players${queryParams ? '?' + queryParams : ''}`);
+    return api.get(`/leaderboard/players${queryParams ? '?' + queryParams : ''}`);
   },
 
   // Get squad leaderboard
   getSquads: (params = {}) => {
     const queryParams = new URLSearchParams(params).toString();
-    return axios.get(`/api/leaderboard/squads${queryParams ? '?' + queryParams : ''}`);
+    return api.get(`/leaderboard/squads${queryParams ? '?' + queryParams : ''}`);
   },
 
   // Get recent winners
   getRecentWinners: (params = {}) => {
     const queryParams = new URLSearchParams(params).toString();
-    return axios.get(`/api/leaderboard/recent-winners${queryParams ? '?' + queryParams : ''}`);
+    return api.get(`/leaderboard/recent-winners${queryParams ? '?' + queryParams : ''}`);
   },
 
   // Get live tournaments
   getLiveTournaments: () => {
-    return axios.get('/api/leaderboard/live-tournaments');
+    return api.get('/leaderboard/live-tournaments');
   },
 
   // Get survival champions
   getSurvivalChampions: () => {
-    return axios.get('/api/leaderboard/survival-champions');
+    return api.get('/leaderboard/survival-champions');
   },
 
   // Get available games
   getGames: () => {
-    return axios.get('/api/leaderboard/games');
+    return api.get('/leaderboard/games');
   },
 
   // Get user's position
   getUserPosition: (params = {}) => {
     const queryParams = new URLSearchParams(params).toString();
-    return axios.get(`/api/leaderboard/user-position${queryParams ? '?' + queryParams : ''}`);
+    return api.get(`/leaderboard/user-position${queryParams ? '?' + queryParams : ''}`);
   }
 };
-
 // Matches API - COMPLETE WITH MATCH CHAT (ADDED MATCH CHAT METHODS HERE)
 const matchesAPI = {
   createMatch: async (matchData) => {
@@ -1384,6 +1384,7 @@ export {
   debugAPI,
   systemAPI,
   adminAPI,
+  leaderboardAPI,
   
   // Helper functions
   checkAPIConnection,

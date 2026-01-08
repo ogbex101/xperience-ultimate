@@ -1455,7 +1455,54 @@ router.get('/:id/bracket', authenticate, async (req, res) => {
     });
   }
 });
+// ============================
+// TEST ROUTE FOR SURVIVAL TITLES
+// ============================
 
+// POST /api/tournaments/test-award-titles - Test survival titles (admin only)
+router.post('/test-award-titles', authenticate, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.is_admin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can test title awards'
+      });
+    }
+    
+    const { tournament_id, winner_id } = req.body;
+    
+    if (!tournament_id || !winner_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'tournament_id and winner_id are required'
+      });
+    }
+    
+    console.log(`🧪 Testing survival titles for tournament ${tournament_id}, winner ${winner_id}`);
+    
+    // Call the function
+    const result = await awardSurvivalTitles(tournament_id, winner_id);
+    
+    res.json({
+      success: true,
+      message: 'Test completed',
+      test_results: result,
+      debug: {
+        tournament_id,
+        winner_id,
+        timestamp: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Test award titles error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Test failed: ' + error.message
+    });
+  }
+});
 // ============================
 // TOURNAMENT JOIN ROUTE (UPDATED FOR XP)
 // ============================
@@ -1885,7 +1932,10 @@ router.post('/', authenticate, async (req, res) => {
       max_squads = 8,
       admin_monitoring = false,
       admin_pin = null,
-      dispute_resolution = 'auto'
+      dispute_resolution = 'auto',
+      title_requirements_boundless = '',
+  title_requirements_chaos = '',
+  title_requirements_order = ''
     } = req.body;
 
     const userId = req.user.id;
@@ -2087,34 +2137,39 @@ if (dbType === 'survival' && !isUserAdmin) {
       // ==================== CREATE TOURNAMENT ====================
 
       const [tournamentResult] = await connection.query(`
-        INSERT INTO tournaments (
-          name, game, description, creator_id, group_id, 
-          max_players, xp_entry_fee, prize_pool, custom_prize_pool, 
-          platform_fee, start_date, status, type, prize_pool_option, 
-          currency, squad_name, max_squads, max_players_per_squad,
-          admin_monitoring, admin_pin, dispute_resolution,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?, ?, 'xp', ?, ?, 5, ?, ?, ?, NOW(), NOW())
-      `, [
-        name.trim(),
-        game,
-        description ? description.trim() : null,
-        userId,
-        group_id || null,
-        maxPlayers,
-        xpEntryFee,
-        prize_pool,
-        customPrizePool,
-        platform_fee,
-        start_date,
-        dbType,
-        prize_pool_option,
-        squad_name ? squad_name.trim() : null,
-        max_squads,
-        finalAdminMonitoring ? 1 : 0,
-        admin_pin,
-        finalDisputeResolution
-      ]);
+  INSERT INTO tournaments (
+    name, game, description, creator_id, group_id, 
+    max_players, xp_entry_fee, prize_pool, custom_prize_pool, 
+    platform_fee, start_date, status, type, prize_pool_option, 
+    currency, squad_name, max_squads, max_players_per_squad,
+    admin_monitoring, admin_pin, dispute_resolution,
+    title_requirements_boundless, title_requirements_chaos, title_requirements_order,
+    created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming', ?, ?, 'xp', ?, ?, 5, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+`, [
+  name.trim(),
+  game,
+  description ? description.trim() : null,
+  userId,
+  group_id || null,
+  maxPlayers,
+  xpEntryFee,
+  prize_pool,
+  customPrizePool,
+  platform_fee,
+  start_date,
+  dbType,
+  prize_pool_option,
+  squad_name ? squad_name.trim() : null,
+  max_squads,
+  finalAdminMonitoring ? 1 : 0,
+  admin_pin,
+  finalDisputeResolution,
+  // Add title requirements (only for survival)
+  dbType === 'survival' ? (title_requirements_boundless || 'Boundless Explorer') : null,
+  dbType === 'survival' ? (title_requirements_chaos || 'Master of Chaos') : null,
+  dbType === 'survival' ? (title_requirements_order || 'Grand Master of Order') : null
+]);
 
       const tournamentId = tournamentResult.insertId;
       console.log(`✅ Tournament created with ID: ${tournamentId}`);
@@ -3883,6 +3938,278 @@ function getRoundName(roundNumber, totalMatches) {
   };
   
   return roundNames[roundNumber] || `Round ${roundNumber}`;
+}
+// ============================
+// SURVIVAL TITLES FUNCTIONS (SAFE VERSION)
+// ============================
+
+/**
+ * Award titles to survival tournament winners
+ * SAFE: Won't crash if tables don't exist
+ */
+async function awardSurvivalTitles(tournamentId, winnerId) {
+  try {
+    console.log(`🏆 [Survival Titles] Starting for tournament ${tournamentId}, winner: ${winnerId}`);
+    
+    // 1. Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT 
+        t.*,
+        t.title_boundless_winner,
+        t.title_chaos_winner, 
+        t.title_order_winner,
+        t.title_requirements_boundless,
+        t.title_requirements_chaos,
+        t.title_requirements_order
+      FROM tournaments t
+      WHERE t.id = ? AND t.type = 'survival'
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      console.log('⚠️ [Survival Titles] Tournament not found or not a survival tournament');
+      return { success: false, message: 'Tournament not found' };
+    }
+
+    const tournament = tournaments[0];
+    console.log(`📊 [Survival Titles] Found tournament: ${tournament.name}`);
+    
+    // 2. Check if we have the required database tables
+    const tablesExist = await checkRequiredTablesExist();
+    if (!tablesExist) {
+      console.log('⚠️ [Survival Titles] Required tables missing, skipping title awards');
+      return { success: false, message: 'Required database tables missing' };
+    }
+    
+    // 3. Update tournament with winner IDs (if columns exist)
+    await updateTournamentWinners(tournamentId, winnerId, tournament);
+    
+    // 4. Create titles if they don't exist
+    await createDefaultTitlesIfNeeded();
+    
+    // 5. Award titles based on tournament results
+    const results = {
+      boundless: false,
+      chaos: false,
+      order: false
+    };
+    
+    // Award Boundless title (if conditions met)
+    if (tournament.title_requirements_boundless) {
+      console.log(`🎖️ [Survival Titles] Awarding Boundless title`);
+      const boundlessResult = await awardTitleToUser(
+        winnerId, 
+        'Boundless Explorer', 
+        tournamentId, 
+        tournament.title_requirements_boundless
+      );
+      results.boundless = boundlessResult;
+    }
+    
+    // Award Chaos title (if conditions met)
+    if (tournament.title_requirements_chaos) {
+      console.log(`🎖️ [Survival Titles] Awarding Chaos title`);
+      const chaosResult = await awardTitleToUser(
+        winnerId, 
+        'Master of Chaos', 
+        tournamentId, 
+        tournament.title_requirements_chaos
+      );
+      results.chaos = chaosResult;
+    }
+    
+    // Award Order title (if conditions met)
+    if (tournament.title_requirements_order) {
+      console.log(`🎖️ [Survival Titles] Awarding Order title`);
+      const orderResult = await awardTitleToUser(
+        winnerId, 
+        'Grand Master of Order', 
+        tournamentId, 
+        tournament.title_requirements_order
+      );
+      results.order = orderResult;
+    }
+    
+    console.log(`✅ [Survival Titles] Completed with results:`, results);
+    return { success: true, results };
+    
+  } catch (error) {
+    console.error('❌ [Survival Titles] Error:', error);
+    // SAFE: Don't throw the error, just return it
+    return { 
+      success: false, 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    };
+  }
+}
+
+/**
+ * Check if required database tables exist
+ */
+async function checkRequiredTablesExist() {
+  try {
+    // Check for titles table
+    const [titlesTable] = await db.execute(`
+      SELECT 1 FROM information_schema.tables 
+      WHERE table_schema = DATABASE() AND table_name = 'titles'
+    `);
+    
+    // Check for user_titles table
+    const [userTitlesTable] = await db.execute(`
+      SELECT 1 FROM information_schema.tables 
+      WHERE table_schema = DATABASE() AND table_name = 'user_titles'
+    `);
+    
+    const hasTables = titlesTable.length > 0 && userTitlesTable.length > 0;
+    console.log(`📊 [Table Check] Titles table: ${titlesTable.length > 0 ? 'YES' : 'NO'}, User titles table: ${userTitlesTable.length > 0 ? 'YES' : 'NO'}`);
+    
+    return hasTables;
+  } catch (error) {
+    console.error('❌ [Table Check] Error:', error);
+    return false;
+  }
+}
+
+/**
+ * Update tournament with winner IDs (only if columns exist)
+ */
+async function updateTournamentWinners(tournamentId, winnerId, tournament) {
+  try {
+    // First check if the columns exist
+    const [columns] = await db.execute(`
+      SELECT COLUMN_NAME 
+      FROM information_schema.columns 
+      WHERE table_schema = DATABASE() 
+        AND table_name = 'tournaments'
+        AND COLUMN_NAME IN ('title_boundless_winner', 'title_chaos_winner', 'title_order_winner')
+    `);
+    
+    const columnNames = columns.map(c => c.COLUMN_NAME);
+    console.log(`📊 [Update Winners] Found columns:`, columnNames);
+    
+    // Update each column if it exists
+    if (columnNames.includes('title_boundless_winner')) {
+      await db.execute(
+        `UPDATE tournaments SET title_boundless_winner = ? WHERE id = ?`,
+        [winnerId, tournamentId]
+      );
+    }
+    
+    if (columnNames.includes('title_chaos_winner')) {
+      await db.execute(
+        `UPDATE tournaments SET title_chaos_winner = ? WHERE id = ?`,
+        [winnerId, tournamentId]
+      );
+    }
+    
+    if (columnNames.includes('title_order_winner')) {
+      await db.execute(
+        `UPDATE tournaments SET title_order_winner = ? WHERE id = ?`,
+        [winnerId, tournamentId]
+      );
+    }
+    
+    console.log(`✅ [Update Winners] Tournament ${tournamentId} updated with winner ${winnerId}`);
+  } catch (error) {
+    console.error('❌ [Update Winners] Error:', error);
+    // Don't throw - just log
+  }
+}
+
+/**
+ * Create default titles if they don't exist
+ */
+async function createDefaultTitlesIfNeeded() {
+  try {
+    // Check if we have any titles
+    const [existingTitles] = await db.execute(`SELECT COUNT(*) as count FROM titles`);
+    
+    if (existingTitles[0].count === 0) {
+      console.log('📝 [Create Titles] No titles found, creating default titles...');
+      
+      // Insert default survival titles
+      await db.execute(`
+        INSERT INTO titles (title_name, title_type, description, rarity, icon_class, color_code) VALUES
+        ('Boundless Explorer', 'boundless', 'Awarded to those who explore without limits', 'epic', 'fas fa-infinity', '#ba68c8'),
+        ('Master of Chaos', 'chaos', 'Awarded to those who thrive in chaos', 'epic', 'fas fa-fire', '#ff4444'),
+        ('Grand Master of Order', 'order', 'Awarded to those who master order and strategy', 'epic', 'fas fa-shield-alt', '#4fc3f7')
+      `);
+      
+      console.log('✅ [Create Titles] Default titles created');
+    } else {
+      console.log(`📊 [Create Titles] Already have ${existingTitles[0].count} titles`);
+    }
+  } catch (error) {
+    console.error('❌ [Create Titles] Error:', error);
+    // Don't throw - just log
+  }
+}
+
+/**
+ * Award a specific title to a user
+ */
+async function awardTitleToUser(userId, titleName, tournamentId, requirement) {
+  try {
+    // 1. Get the title ID
+    const [title] = await db.execute(
+      `SELECT id FROM titles WHERE title_name = ? LIMIT 1`,
+      [titleName]
+    );
+    
+    if (title.length === 0) {
+      console.log(`⚠️ [Award Title] Title not found: ${titleName}`);
+      return false;
+    }
+    
+    const titleId = title[0].id;
+    
+    // 2. Check if user already has this title
+    const [existing] = await db.execute(`
+      SELECT 1 FROM user_titles 
+      WHERE user_id = ? AND title_id = ?
+    `, [userId, titleId]);
+    
+    if (existing.length > 0) {
+      console.log(`ℹ️ [Award Title] User ${userId} already has title: ${titleName}`);
+      return true; // Already has it, count as success
+    }
+    
+    // 3. Award the title
+    await db.execute(`
+      INSERT INTO user_titles 
+      (user_id, title_id, tournament_id, achievement_data, earned_at)
+      VALUES (?, ?, ?, ?, NOW())
+    `, [
+      userId, 
+      titleId, 
+      tournamentId, 
+      JSON.stringify({
+        requirement: requirement,
+        awarded_for: 'survival_tournament_victory',
+        tournament_id: tournamentId,
+        awarded_at: new Date().toISOString()
+      })
+    ]);
+    
+    console.log(`✅ [Award Title] Awarded ${titleName} to user ${userId}`);
+    
+    // 4. Send notification
+    await db.execute(`
+      INSERT INTO notifications 
+      (user_id, message, type, status, tournament_id, created_at)
+      VALUES (?, ?, 'system', 'unread', ?, NOW())
+    `, [
+      userId,
+      `🎖️ Congratulations! You earned the "${titleName}" title by winning a Survival tournament!`,
+      tournamentId
+    ]);
+    
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ [Award Title] Error awarding ${titleName}:`, error);
+    return false;
+  }
 }
 
 module.exports = router;

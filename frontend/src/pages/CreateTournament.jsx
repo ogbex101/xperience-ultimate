@@ -4,8 +4,9 @@ import { useAuth } from '../contexts/AuthContext'
 import { tournamentsAPI } from '../utils/api'
 import { 
   Trophy, Gamepad2, Users, Calendar, DollarSign, ArrowLeft, 
-  Plus, Shield, Crown, Target, AlertCircle, Check, X,
-  Eye, Lock, Unlock, Shield as AdminShield
+  Plus, Shield, Flame, Crown, Target, AlertCircle, Check, X,
+  Eye, Lock, Unlock, Shield as AdminShield,
+  Infinity, Info  // <-- ADD THESE TWO
 } from 'lucide-react'
 
 const CreateTournament = () => {
@@ -24,7 +25,10 @@ const CreateTournament = () => {
     max_squads: 8,
     admin_monitoring: false, // New: Admin monitoring option
     admin_pin: '', // New: Admin PIN for monitoring
-    dispute_resolution: 'auto' // New: auto, admin, voting
+    dispute_resolution: 'auto', // New: auto, admin, voting
+   title_requirements_boundless: 'Boundless Explorer - Survive all rounds with highest score',
+  title_requirements_chaos: 'Master of Chaos - Win the most chaotic matches',
+  title_requirements_order: 'Grand Master of Order - Maintain highest consistency'
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -712,6 +716,88 @@ useEffect(() => {
                   </p>
                 </div>
               )}
+            {formData.type === 'survival' && (
+  <div className="bg-purple-900/20 rounded-lg p-6 border border-purple-500/30">
+    <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+      <Crown className="w-5 h-5 mr-2 text-purple-400" />
+      <span>Survival Tournament Titles</span>
+    </h3>
+    
+    <p className="text-gray-300 mb-4">
+      Set special titles for top 3 winners of this Survival tournament. These titles will be awarded 
+      and displayed on their profiles and in the leaderboard.
+    </p>
+    
+    <div className="space-y-4">
+      {/* Boundless Title (1st Place) */}
+      <div className="bg-gray-800/50 rounded-lg p-4 border border-purple-500/30">
+        <div className="flex items-center mb-2">
+          <Infinity className="w-5 h-5 text-purple-400 mr-2" />
+          <h4 className="font-semibold text-purple-300">Boundless Title (1st Place)</h4>
+        </div>
+        <div className="text-sm text-gray-400 mb-2">
+          Awarded to the tournament champion
+        </div>
+        <input
+          type="text"
+          name="title_requirements_boundless"
+          value={formData.title_requirements_boundless}
+          onChange={handleChange}
+          className="input-primary w-full"
+          placeholder="Boundless Explorer - Survive all rounds with highest score"
+          maxLength="100"
+        />
+      </div>
+      
+      {/* Order Title (2nd Place) */}
+      <div className="bg-gray-800/50 rounded-lg p-4 border border-blue-500/30">
+        <div className="flex items-center mb-2">
+          <Shield className="w-5 h-5 text-blue-400 mr-2" />
+          <h4 className="font-semibold text-blue-300">Order Title (2nd Place)</h4>
+        </div>
+        <div className="text-sm text-gray-400 mb-2">
+          Awarded to the runner-up
+        </div>
+        <input
+          type="text"
+          name="title_requirements_order"
+          value={formData.title_requirements_order}
+          onChange={handleChange}
+          className="input-primary w-full"
+          placeholder="Grand Master of Order - Maintain highest consistency"
+          maxLength="100"
+        />
+      </div>
+      
+      {/* Chaos Title (3rd Place) */}
+      <div className="bg-gray-800/50 rounded-lg p-4 border border-red-500/30">
+        <div className="flex items-center mb-2">
+          <Flame className="w-5 h-5 text-red-400 mr-2" />
+          <h4 className="font-semibold text-red-300">Chaos Title (3rd Place)</h4>
+        </div>
+        <div className="text-sm text-gray-400 mb-2">
+          Awarded to the 3rd place winner
+        </div>
+        <input
+          type="text"
+          name="title_requirements_chaos"
+          value={formData.title_requirements_chaos}
+          onChange={handleChange}
+          className="input-primary w-full"
+          placeholder="Master of Chaos - Win the most chaotic matches"
+          maxLength="100"
+        />
+      </div>
+    </div>
+    
+    <div className="mt-4 text-sm text-gray-400">
+      <p className="flex items-center">
+        <Info className="w-4 h-4 mr-2" /> {/* This was missing! */}
+        Titles will be automatically assigned when tournament is completed
+      </p>
+    </div>
+  </div>
+)}
 
               {/* Dispute Resolution */}
               <div>

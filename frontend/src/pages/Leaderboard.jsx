@@ -127,6 +127,19 @@ const Leaderboard = () => {
       console.error('Failed to fetch user position:', error);
     }
   };
+  // Add this helper function inside your Leaderboard component:
+const formatWinRate = (rate) => {
+  // Convert to number if it's a string
+  const num = typeof rate === 'string' ? parseFloat(rate) : rate;
+  
+  // Handle NaN or invalid numbers
+  if (isNaN(num) || !isFinite(num)) {
+    return '0.0';
+  }
+  
+  // Format to 1 decimal place
+  return num.toFixed(1);
+};
 
   const getRankColor = (rank) => {
     const colors = {
@@ -520,13 +533,13 @@ const Leaderboard = () => {
                             {player.matches_played || player.game_matches_played || 0}
                           </td>
                           <td className="py-4 px-6">
-                            <div className="flex items-center">
-                              <BarChart3 className="w-4 h-4 mr-2 text-green-400" />
-                              <span className="font-semibold text-green-400">
-                                {(player.win_rate || player.game_win_rate || 0).toFixed(1)}%
-                              </span>
-                            </div>
-                          </td>
+  <div className="flex items-center">
+    <BarChart3 className="w-4 h-4 mr-2 text-green-400" />
+    <span className="font-semibold text-green-400">
+      {formatWinRate(player.win_rate || player.game_win_rate || 0)}%
+    </span>
+  </div>
+</td>
                           <td className="py-4 px-6">
                             <div className="flex items-center">
                               <Trophy className="w-4 h-4 mr-2 text-yellow-400" />

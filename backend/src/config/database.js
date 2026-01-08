@@ -11,7 +11,6 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  reconnect: true
 };
 
 // Create connection pool
