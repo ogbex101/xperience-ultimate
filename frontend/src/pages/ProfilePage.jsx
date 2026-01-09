@@ -33,12 +33,13 @@ import {
   Users as UsersIcon,
   Target as TargetIcon,
   Sword,
-  Hash
+  Hash,
+  ChevronRight
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { usersAPI } from '../utils/api';
 
-// Define rank requirements based on your SQL
+// Rank requirements from your SQL - FINAL CORRECT
 const RANK_REQUIREMENTS = {
   'E': { name: 'Newbie', min_wins: 0, min_matches: 0, win_rate: 0, color: '#ffffff', next: 'D' },
   'D': { name: 'Bronze', min_wins: 10, min_matches: 25, win_rate: 50, color: '#1e90ff', next: 'C' },
@@ -48,64 +49,6 @@ const RANK_REQUIREMENTS = {
   'S': { name: 'Diamond', min_wins: 200, min_matches: 400, win_rate: 70, color: '#ff0000', next: 'SS' },
   'SS': { name: 'Elite', min_wins: 300, min_matches: 600, win_rate: 75, color: '#ff4500', next: 'SSS' },
   'SSS': { name: 'Supreme', min_wins: 500, min_matches: 1000, win_rate: 80, color: '#ff00ff', next: null }
-};
-
-// Helper function to calculate cumulative requirements
-const calculateCumulativeRequirements = (currentRank) => {
-  const rankOrder = ['E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
-  const currentIndex = rankOrder.indexOf(currentRank);
-  
-  let totalWins = 0;
-  let totalMatches = 0;
-  let winRate = 0;
-  
-  // Sum requirements from all previous ranks up to current rank
-  for (let i = 0; i <= currentIndex; i++) {
-    const rank = rankOrder[i];
-    totalWins += RANK_REQUIREMENTS[rank].min_wins;
-    totalMatches += RANK_REQUIREMENTS[rank].min_matches;
-    // For win rate, we use the current rank's requirement (not cumulative)
-    if (i === currentIndex) {
-      winRate = RANK_REQUIREMENTS[rank].win_rate;
-    }
-  }
-  
-  return { totalWins, totalMatches, winRate };
-};
-
-// Helper function to calculate next rank requirements
-const calculateNextRankRequirements = (currentRank) => {
-  const rankOrder = ['E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
-  const currentIndex = rankOrder.indexOf(currentRank);
-  
-  if (currentIndex === rankOrder.length - 1) {
-    return null; // Already at highest rank
-  }
-  
-  const nextRank = rankOrder[currentIndex + 1];
-  
-  // Calculate cumulative requirements for next rank
-  let nextTotalWins = 0;
-  let nextTotalMatches = 0;
-  
-  for (let i = 0; i <= currentIndex + 1; i++) {
-    const rank = rankOrder[i];
-    nextTotalWins += RANK_REQUIREMENTS[rank].min_wins;
-    nextTotalMatches += RANK_REQUIREMENTS[rank].min_matches;
-  }
-  
-  const nextWinRate = RANK_REQUIREMENTS[nextRank].win_rate;
-  
-  return {
-    rank: nextRank,
-    name: RANK_REQUIREMENTS[nextRank].name,
-    color: RANK_REQUIREMENTS[nextRank].color,
-    totalWins: nextTotalWins,
-    totalMatches: nextTotalMatches,
-    winRate: nextWinRate,
-    min_wins: RANK_REQUIREMENTS[nextRank].min_wins,
-    min_matches: RANK_REQUIREMENTS[nextRank].min_matches
-  };
 };
 
 const ProfilePage = () => {
@@ -163,7 +106,7 @@ const ProfilePage = () => {
         bio: userData.bio || ''
       });
 
-      // Calculate rank progress with CORRECT cumulative logic
+      // Calculate rank progress with FINAL CORRECT LOGIC
       const progressData = calculateRankProgress(userData);
       setRankProgress(progressData);
 
@@ -205,91 +148,83 @@ const ProfilePage = () => {
     }
   };
 
+  // FINAL CORRECT LOGIC: Shows NEXT rank's TOTAL requirements
   const calculateRankProgress = (userData) => {
     const currentRank = userData.rank || 'E';
     const userWins = userData.wins || 0;
     const userMatches = userData.matches_played || 0;
     const userWinRate = userData.win_rate || 0;
     
-    // Calculate CURRENT rank cumulative requirements
-    const currentCumulative = calculateCumulativeRequirements(currentRank);
+    const currentRankInfo = RANK_REQUIREMENTS[currentRank];
+    const nextRank = currentRankInfo.next;
+    const nextRankInfo = nextRank ? RANK_REQUIREMENTS[nextRank] : null;
     
-    // Calculate NEXT rank requirements
-    const nextRankInfo = calculateNextRankRequirements(currentRank);
+    if (!nextRankInfo) {
+      // User is at highest rank (SSS)
+      return {
+        current_rank: currentRank,
+        current_rank_name: currentRankInfo.name,
+        current_rank_color: currentRankInfo.color,
+        next_rank: null,
+        next_rank_name: null,
+        next_rank_color: null,
+        overall_percentage: 100,
+        can_rank_up: false,
+        is_max_rank: true,
+        message: 'You have reached the highest rank!'
+      };
+    }
     
-    // Calculate progress percentages
-    const winsProgress = Math.min(100, (userWins / currentCumulative.totalWins) * 100);
-    const matchesProgress = Math.min(100, (userMatches / currentCumulative.totalMatches) * 100);
-    const winRateProgress = Math.min(100, (userWinRate / currentCumulative.winRate) * 100);
+    // Calculate progress using NEXT rank's TOTAL requirements
+    const winsProgress = Math.min(100, (userWins / nextRankInfo.min_wins) * 100);
+    const matchesProgress = Math.min(100, (userMatches / nextRankInfo.min_matches) * 100);
+    const winRateProgress = Math.min(100, (userWinRate / nextRankInfo.win_rate) * 100);
     
     // Overall progress (average of all three)
     const overallProgress = Math.round((winsProgress + matchesProgress + winRateProgress) / 3);
     
     // Check if ready for next rank
-    let canRankUp = false;
-    let nextRankRequirements = null;
-    
-    if (nextRankInfo) {
-      nextRankRequirements = calculateCumulativeRequirements(nextRankInfo.rank);
-      canRankUp = (
-        userWins >= nextRankRequirements.totalWins &&
-        userMatches >= nextRankRequirements.totalMatches &&
-        userWinRate >= nextRankInfo.winRate
-      );
-    }
+    const canRankUp = (
+      userWins >= nextRankInfo.min_wins &&
+      userMatches >= nextRankInfo.min_matches &&
+      userWinRate >= nextRankInfo.win_rate
+    );
     
     return {
       current_rank: currentRank,
-      current_rank_name: RANK_REQUIREMENTS[currentRank].name,
-      current_rank_color: RANK_REQUIREMENTS[currentRank].color,
-      next_rank: nextRankInfo ? nextRankInfo.rank : null,
-      next_rank_name: nextRankInfo ? nextRankInfo.name : null,
-      next_rank_color: nextRankInfo ? nextRankInfo.color : null,
+      current_rank_name: currentRankInfo.name,
+      current_rank_color: currentRankInfo.color,
+      next_rank: nextRank,
+      next_rank_name: nextRankInfo.name,
+      next_rank_color: nextRankInfo.color,
       overall_percentage: overallProgress,
       can_rank_up: canRankUp,
+      is_max_rank: false,
       
-      // Current cumulative requirements
-      current_requirements: {
+      // Requirements for NEXT rank - TOTAL requirements from SQL
+      next_requirements: {
         wins: {
-          required: currentCumulative.totalWins,
-          current: userWins,
+          required: nextRankInfo.min_wins, // TOTAL wins needed for next rank
+          current: userWins, // User's current wins
+          needed: Math.max(0, nextRankInfo.min_wins - userWins), // Additional wins needed
           percentage: winsProgress,
           color: '#3B82F6'
         },
         matches: {
-          required: currentCumulative.totalMatches,
-          current: userMatches,
+          required: nextRankInfo.min_matches, // TOTAL matches needed for next rank
+          current: userMatches, // User's current matches
+          needed: Math.max(0, nextRankInfo.min_matches - userMatches), // Additional matches needed
           percentage: matchesProgress,
           color: '#10B981'
         },
         win_rate: {
-          required: currentCumulative.winRate,
-          current: userWinRate,
+          required: nextRankInfo.win_rate, // Win rate for next rank
+          current: userWinRate, // User's current win rate
+          needed: Math.max(0, nextRankInfo.win_rate - userWinRate), // Additional win rate needed
           percentage: winRateProgress,
           color: '#8B5CF6'
         }
-      },
-      
-      // Next rank requirements (for display)
-      next_requirements: nextRankInfo ? {
-        wins: {
-          total_required: nextRankRequirements.totalWins,
-          additional_required: nextRankInfo.min_wins,
-          current: userWins,
-          needed: nextRankRequirements.totalWins - userWins
-        },
-        matches: {
-          total_required: nextRankRequirements.totalMatches,
-          additional_required: nextRankInfo.min_matches,
-          current: userMatches,
-          needed: nextRankRequirements.totalMatches - userMatches
-        },
-        win_rate: {
-          required: nextRankInfo.winRate,
-          current: userWinRate,
-          needed: nextRankInfo.winRate - userWinRate
-        }
-      } : null
+      }
     };
   };
 
@@ -340,6 +275,7 @@ const ProfilePage = () => {
       </div>
       <div className="text-xs text-gray-400 text-right">
         {percentage.toFixed(1)}%
+        {required - current > 0 && ` (Need ${required - current} more)`}
       </div>
     </div>
   );
@@ -575,14 +511,16 @@ const ProfilePage = () => {
                       </div>
                       <div className="text-gray-400 text-sm">{rankProgress.current_rank_name}</div>
                       <div className="text-xs text-gray-500 mt-1">
-                        Cumulative: {rankProgress.current_requirements.wins.required} wins, {rankProgress.current_requirements.matches.required} matches
+                        Current Rank
                       </div>
                     </div>
                     
                     <div className="flex-1 mx-8">
                       <div className="mb-2">
                         <div className="flex justify-between text-sm text-gray-400 mb-2">
-                          <span>Progress to {rankProgress.next_rank_name || 'Max Rank'}</span>
+                          <span>
+                            Progress to {rankProgress.next_rank_name || 'Max Rank'}
+                          </span>
                           <span className="font-bold text-white">{rankProgress.overall_percentage || 0}%</span>
                         </div>
                         <div className="h-4 bg-gray-800 rounded-full overflow-hidden">
@@ -593,11 +531,13 @@ const ProfilePage = () => {
                         </div>
                       </div>
                       <div className="text-center text-sm text-gray-400">
-                        {rankProgress.next_rank ? `Towards ${rankProgress.next_rank_name}` : 'Highest Rank Achieved'}
+                        {rankProgress.next_rank 
+                          ? `Requirements for ${rankProgress.next_rank_name} rank` 
+                          : 'Highest Rank Achieved'}
                       </div>
                     </div>
                     
-                    {rankProgress.next_rank && (
+                    {rankProgress.next_rank ? (
                       <div className="text-center">
                         <div 
                           className="text-5xl font-bold mb-2"
@@ -606,127 +546,134 @@ const ProfilePage = () => {
                           {rankProgress.next_rank}
                         </div>
                         <div className="text-gray-400 text-sm">{rankProgress.next_rank_name}</div>
-                        {rankProgress.next_requirements && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Need +{rankProgress.next_requirements.wins.additional_required} wins, +{rankProgress.next_requirements.matches.additional_required} matches
-                          </div>
-                        )}
+                        <div className="text-xs text-gray-500 mt-1">
+                          Next Rank
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center">
+                        <div 
+                          className="text-5xl font-bold mb-2 text-yellow-400"
+                        >
+                          👑
+                        </div>
+                        <div className="text-gray-400 text-sm">Max Rank</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Supreme Supreme Supreme
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  {/* Current Rank Requirements - CORRECT CUMULATIVE LOGIC */}
-                  {rankProgress.current_requirements && (
+                  {/* NEXT RANK Requirements - FINAL CORRECT LOGIC */}
+                  {rankProgress.next_requirements && !rankProgress.is_max_rank && (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                      {/* Wins Requirement */}
+                      {/* Wins Required for NEXT rank */}
                       <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700">
                         <div className="flex items-center gap-3 mb-3">
                           <div className="p-2 rounded-lg bg-blue-500/20">
                             <Target className="w-5 h-5 text-blue-400" />
                           </div>
                           <div>
-                            <div className="text-sm text-gray-400">Total Wins Required</div>
+                            <div className="text-sm text-gray-400">Wins Needed</div>
                             <div className="text-lg font-bold text-white">
-                              {rankProgress.current_requirements.wins.current}/{rankProgress.current_requirements.wins.required}
+                              {rankProgress.next_requirements.wins.current}/{rankProgress.next_requirements.wins.required}
                             </div>
                             <div className="text-xs text-gray-500">
-                              Cumulative for {rankProgress.current_rank}
+                              Total for {rankProgress.next_rank_name}
                             </div>
                           </div>
                         </div>
-                        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-blue-500 rounded-full"
-                            style={{ width: `${rankProgress.current_requirements.wins.percentage || 0}%` }}
-                          />
-                        </div>
-                        <div className="text-xs text-gray-400 text-right mt-1">
-                          {rankProgress.current_requirements.wins.percentage.toFixed(1)}%
-                        </div>
+                        <ProgressBar
+                          label=""
+                          current={rankProgress.next_requirements.wins.current}
+                          required={rankProgress.next_requirements.wins.required}
+                          percentage={rankProgress.next_requirements.wins.percentage}
+                          color={rankProgress.next_requirements.wins.color}
+                          icon={Target}
+                        />
                       </div>
 
-                      {/* Matches Requirement */}
+                      {/* Matches Required for NEXT rank */}
                       <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700">
                         <div className="flex items-center gap-3 mb-3">
                           <div className="p-2 rounded-lg bg-green-500/20">
                             <Gamepad2 className="w-5 h-5 text-green-400" />
                           </div>
                           <div>
-                            <div className="text-sm text-gray-400">Total Matches Required</div>
+                            <div className="text-sm text-gray-400">Matches Needed</div>
                             <div className="text-lg font-bold text-white">
-                              {rankProgress.current_requirements.matches.current}/{rankProgress.current_requirements.matches.required}
+                              {rankProgress.next_requirements.matches.current}/{rankProgress.next_requirements.matches.required}
                             </div>
                             <div className="text-xs text-gray-500">
-                              Cumulative for {rankProgress.current_rank}
+                              Total for {rankProgress.next_rank_name}
                             </div>
                           </div>
                         </div>
-                        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-green-500 rounded-full"
-                            style={{ width: `${rankProgress.current_requirements.matches.percentage || 0}%` }}
-                          />
-                        </div>
-                        <div className="text-xs text-gray-400 text-right mt-1">
-                          {rankProgress.current_requirements.matches.percentage.toFixed(1)}%
-                        </div>
+                        <ProgressBar
+                          label=""
+                          current={rankProgress.next_requirements.matches.current}
+                          required={rankProgress.next_requirements.matches.required}
+                          percentage={rankProgress.next_requirements.matches.percentage}
+                          color={rankProgress.next_requirements.matches.color}
+                          icon={Gamepad2}
+                        />
                       </div>
 
-                      {/* Win Rate Requirement */}
+                      {/* Win Rate Required for NEXT rank */}
                       <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700">
                         <div className="flex items-center gap-3 mb-3">
                           <div className="p-2 rounded-lg bg-purple-500/20">
                             <TrendingUp className="w-5 h-5 text-purple-400" />
                           </div>
                           <div>
-                            <div className="text-sm text-gray-400">Win Rate Required</div>
+                            <div className="text-sm text-gray-400">Win Rate Needed</div>
                             <div className="text-lg font-bold text-white">
-                              {rankProgress.current_requirements.win_rate.current}%/{rankProgress.current_requirements.win_rate.required}%
+                              {rankProgress.next_requirements.win_rate.current}%/{rankProgress.next_requirements.win_rate.required}%
                             </div>
                             <div className="text-xs text-gray-500">
-                              For {rankProgress.current_rank} rank only
+                              For {rankProgress.next_rank_name} rank
                             </div>
                           </div>
                         </div>
-                        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-purple-500 rounded-full"
-                            style={{ width: `${rankProgress.current_requirements.win_rate.percentage || 0}%` }}
-                          />
-                        </div>
-                        <div className="text-xs text-gray-400 text-right mt-1">
-                          {rankProgress.current_requirements.win_rate.percentage.toFixed(1)}%
-                        </div>
+                        <ProgressBar
+                          label=""
+                          current={rankProgress.next_requirements.win_rate.current}
+                          required={rankProgress.next_requirements.win_rate.required}
+                          percentage={rankProgress.next_requirements.win_rate.percentage}
+                          color={rankProgress.next_requirements.win_rate.color}
+                          icon={TrendingUp}
+                        />
                       </div>
                     </div>
                   )}
 
-                  {/* Next Rank Requirements (if available) */}
-                  {rankProgress.next_requirements && (
+                  {/* Next Rank Requirements Summary */}
+                  {rankProgress.next_rank && !rankProgress.is_max_rank && (
                     <div className="bg-gradient-to-r from-gray-900 to-gray-800 rounded-xl border border-gray-700 p-6 mb-6">
                       <div className="flex items-center gap-3 mb-4">
                         <Target className="text-purple-400" size={24} />
-                        <h3 className="text-xl font-bold text-white">Requirements for {rankProgress.next_rank_name} Rank</h3>
+                        <h3 className="text-xl font-bold text-white">Requirements Summary for {rankProgress.next_rank_name}</h3>
                       </div>
                       
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="p-3 bg-gray-800/30 rounded-lg">
                           <div className="text-sm text-gray-400">Total Wins</div>
                           <div className="text-xl font-bold" style={{ color: rankProgress.next_rank_color }}>
-                            {rankProgress.next_requirements.wins.total_required}
+                            {rankProgress.next_requirements.wins.required}
                           </div>
                           <div className="text-xs text-gray-500">
-                            +{rankProgress.next_requirements.wins.additional_required} more
+                            Current: {rankProgress.next_requirements.wins.current}
                           </div>
                         </div>
                         
                         <div className="p-3 bg-gray-800/30 rounded-lg">
                           <div className="text-sm text-gray-400">Total Matches</div>
                           <div className="text-xl font-bold" style={{ color: rankProgress.next_rank_color }}>
-                            {rankProgress.next_requirements.matches.total_required}
+                            {rankProgress.next_requirements.matches.required}
                           </div>
                           <div className="text-xs text-gray-500">
-                            +{rankProgress.next_requirements.matches.additional_required} more
+                            Current: {rankProgress.next_requirements.matches.current}
                           </div>
                         </div>
                         
@@ -736,12 +683,12 @@ const ProfilePage = () => {
                             {rankProgress.next_requirements.win_rate.required}%
                           </div>
                           <div className="text-xs text-gray-500">
-                            Need {rankProgress.next_requirements.win_rate.needed > 0 ? `+${rankProgress.next_requirements.win_rate.needed.toFixed(1)}%` : 'Met'}
+                            Current: {rankProgress.next_requirements.win_rate.current}%
                           </div>
                         </div>
                         
                         <div className="p-3 bg-gray-800/30 rounded-lg">
-                          <div className="text-sm text-gray-400">Progress</div>
+                          <div className="text-sm text-gray-400">Overall Progress</div>
                           <div className="text-xl font-bold" style={{ color: rankProgress.next_rank_color }}>
                             {rankProgress.overall_percentage}%
                           </div>
@@ -753,8 +700,22 @@ const ProfilePage = () => {
                     </div>
                   )}
 
-                  {/* Rank Up Status */}
-                  {rankProgress.can_rank_up && (
+                  {/* Max Rank Message or Rank Up Status */}
+                  {rankProgress.is_max_rank ? (
+                    <div className="mt-6 p-4 bg-gradient-to-r from-yellow-900/30 to-amber-900/30 rounded-lg border border-yellow-700">
+                      <div className="flex items-center justify-center">
+                        <div className="flex items-center gap-3">
+                          <Crown className="text-yellow-400" size={24} />
+                          <div>
+                            <h3 className="font-bold text-white">Highest Rank Achieved!</h3>
+                            <p className="text-sm text-gray-300">
+                              You have reached the Supreme rank. You are at the top!
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : rankProgress.can_rank_up ? (
                     <div className="mt-6 p-4 bg-gradient-to-r from-green-900/30 to-emerald-900/30 rounded-lg border border-green-700">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -762,7 +723,7 @@ const ProfilePage = () => {
                           <div>
                             <h3 className="font-bold text-white">Ready to Rank Up!</h3>
                             <p className="text-sm text-gray-300">
-                              You meet all cumulative requirements for {rankProgress.next_rank_name} rank
+                              You meet all requirements for {rankProgress.next_rank_name} rank
                             </p>
                           </div>
                         </div>
@@ -771,7 +732,7 @@ const ProfilePage = () => {
                         </button>
                       </div>
                     </div>
-                  )}
+                  ) : null}
                 </>
               )}
             </div>
@@ -1008,34 +969,46 @@ const ProfilePage = () => {
               </div>
             )}
 
-            {/* Current Rank Info */}
+            {/* Rank Progress Summary */}
             <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-800 p-6">
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 rounded-lg bg-purple-500/20">
-                  <Crown className="text-purple-400" size={20} />
+                  <Trophy className="text-purple-400" size={20} />
                 </div>
                 <div>
-                  <h3 className="font-medium text-white">Current Rank Info</h3>
-                  <p className="text-sm text-gray-400">{rankProgress?.current_rank_name || 'Rank'}</p>
+                  <h3 className="font-medium text-white">Rank Progress</h3>
+                  <p className="text-sm text-gray-400">Current status</p>
                 </div>
               </div>
               
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Total Wins</span>
-                  <span className="text-white">{userStats.wins || 0}/{rankProgress?.current_requirements?.wins.required || 0}</span>
+                  <span className="text-gray-400">Current Rank</span>
+                  <span className="text-white">{rankProgress?.current_rank || 'E'}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Total Matches</span>
-                  <span className="text-white">{userStats.matches_played || 0}/{rankProgress?.current_requirements?.matches.required || 0}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Win Rate</span>
-                  <span className="text-green-400">{userStats.win_rate || 0}%/{rankProgress?.current_requirements?.win_rate.required || 0}%</span>
+                  <span className="text-gray-400">Next Rank</span>
+                  <span className="text-blue-400">{rankProgress?.next_rank || 'MAX'}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-gray-400">Progress</span>
-                  <span className="text-blue-400">{rankProgress?.overall_percentage || 0}%</span>
+                  <span className="text-green-400">{rankProgress?.overall_percentage || 0}%</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Status</span>
+                  <span className={`font-semibold ${
+                    rankProgress?.can_rank_up 
+                      ? 'text-green-400' 
+                      : rankProgress?.is_max_rank 
+                      ? 'text-yellow-400' 
+                      : 'text-blue-400'
+                  }`}>
+                    {rankProgress?.can_rank_up 
+                      ? 'Ready to Rank Up' 
+                      : rankProgress?.is_max_rank 
+                      ? 'Max Rank' 
+                      : 'In Progress'}
+                  </span>
                 </div>
               </div>
             </div>
