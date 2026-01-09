@@ -310,36 +310,34 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Get current user profile
+// Add this route to your auth.js file (around other routes)
+
+// GET /api/auth/profile - Get current user profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    console.log('Profile route - req.user:', req.user); // Debug log
+    console.log('🔵 AUTH PROFILE: Fetching for user', req.user.id);
     
-    const userId = req.user.id || req.user.userId;
-    
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'User ID not found in token' 
-      });
-    }
+    const [users] = await db.execute(
+      `SELECT id, username, email, profile_pic, rank,
+              matches_played, wins, losses, win_rate,
+              xp_points, is_admin, account_status,
+              wallet_account_number, balance
+       FROM users 
+       WHERE id = ?`,
+      [req.user.id]
+    );
 
-    const user = await User.findById(userId);
-    if (!user) {
+    if (users.length === 0) {
       return res.status(404).json({ 
         success: false,
         error: 'User not found' 
       });
     }
 
-    // Remove sensitive data
-    const { password, reset_token, token_expiry, ...userData } = user;
-
     res.json({
       success: true,
-      user: userData
+      user: users[0]
     });
-
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ 

@@ -702,6 +702,70 @@ router.get('/:id/standings', async (req, res) => {
     });
   }
 });
+// In tournaments.js
+router.get('/live', async (req, res) => {
+  try {
+    const [tournaments] = await db.execute(`
+      SELECT t.*, COUNT(tp.id) as participants
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE t.status = 'ongoing'
+      GROUP BY t.id
+      ORDER BY t.start_date DESC
+      LIMIT 10
+    `);
+    
+    res.json({ success: true, tournaments });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// In users.js
+router.get('/:id/activity', authenticate, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    // Get match history
+    const [matches] = await db.execute(`
+      SELECT 
+        m.*,
+        CASE 
+          WHEN m.winner_id = ? THEN 'win'
+          WHEN m.winner_id IS NOT NULL AND m.winner_id != ? THEN 'loss'
+          ELSE 'match'
+        END as type,
+        u1.username as opponent_username,
+        t.name as tournament_name,
+        t.game
+      FROM matches m
+      LEFT JOIN users u1 ON (m.player1_id = u1.id OR m.player2_id = u1.id) AND u1.id != ?
+      LEFT JOIN tournaments t ON m.tournament_id = t.id
+      WHERE (m.player1_id = ? OR m.player2_id = ?)
+        AND m.status = 'completed'
+      ORDER BY m.completed_at DESC
+      LIMIT 10
+    `, [userId, userId, userId, userId, userId]);
+    
+    // Format activity
+    const activities = matches.map(match => ({
+      type: match.type,
+      description: match.type === 'win' 
+        ? `You defeated ${match.opponent_username}`
+        : match.type === 'loss'
+        ? `You lost to ${match.opponent_username}`
+        : `Match completed against ${match.opponent_username}`,
+      game: match.game,
+      timestamp: match.completed_at,
+      xp: match.type === 'win' ? 100 : 50 // Example XP
+    }));
+    
+    res.json({ success: true, activities });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 router.get('/:id', async (req, res) => {
   try {

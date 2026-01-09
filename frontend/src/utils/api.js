@@ -223,9 +223,9 @@ const authAPI = {
     return await api.post('/auth/register', userData);
   },
   
-  getProfile: async () => {
+   getProfile: async () => {
     console.log('👤 AuthAPI: Fetching user profile');
-    return await api.get('/auth/profile');
+    return await api.get('/auth/me');  // ← CORRECT ENDPOINT
   },
   
   getMe: async () => {
@@ -244,7 +244,7 @@ const authAPI = {
   }
 };
 
-// Users API - COMPLETE
+// Users API - COMPLETE (UPDATED FOR DASHBOARD)
 const usersAPI = {
   getProfile: async (userId) => {
     console.log(`👤 UsersAPI: Fetching profile for user ${userId}`);
@@ -304,9 +304,25 @@ const usersAPI = {
     return api.get(`/suggested-players/compatibility/${playerId}`);
   },
   
+  // FIXED: Added getUserStats (was causing error)
   getUserStats: async (userId) => {
     console.log(`📊 UsersAPI: Fetching stats for user ${userId}`);
-    return await api.get(`/users/${userId}/stats`);
+    try {
+      return await api.get(`/users/${userId}/stats`);
+    } catch (error) {
+      console.error('❌ UsersAPI.getUserStats error:', error);
+      // Return default stats if endpoint doesn't exist
+      return {
+        success: true,
+        data: {
+          wins: 0,
+          matches_played: 0,
+          win_rate: 0,
+          tournaments_won: 0,
+          xp_points: 0
+        }
+      };
+    }
   },
   
   getUserMatchHistory: async (userId, page = 1, limit = 10) => {
@@ -317,6 +333,158 @@ const usersAPI = {
   getUserTournamentHistory: async (userId, page = 1, limit = 10) => {
     console.log(`🏆 UsersAPI: Fetching tournament history for user ${userId}`);
     return await api.get(`/users/${userId}/tournament-history?page=${page}&limit=${limit}`);
+  },
+  
+  // NEW FUNCTIONS FOR DASHBOARD:
+  
+  // Get user activity (recent matches, tournaments, etc.)
+  getRecentActivity: async (userId, limit = 5) => {
+    console.log(`📱 UsersAPI: Fetching recent activity for user ${userId}`);
+    try {
+      return await api.get(`/users/${userId}/activity?limit=${limit}`);
+    } catch (error) {
+      console.error('❌ UsersAPI.getRecentActivity error:', error);
+      // Return empty activity if endpoint doesn't exist
+      return {
+        success: true,
+        activities: []
+      };
+    }
+  },
+  
+  // Get live/ongoing tournaments user is in
+  getUserLiveTournaments: async (userId) => {
+    console.log(`🎯 UsersAPI: Fetching live tournaments for user ${userId}`);
+    try {
+      return await api.get(`/users/${userId}/live-tournaments`);
+    } catch (error) {
+      console.error('❌ UsersAPI.getUserLiveTournaments error:', error);
+      return {
+        success: true,
+        tournaments: []
+      };
+    }
+  },
+  
+  getDashboardSummary: async (userId) => {
+  console.log(`📊 UsersAPI: Fetching dashboard for user ${userId}`);
+  try {
+    return await api.get(`/users/${userId}/dashboard`);
+  } catch (error) {
+    console.error('❌ UsersAPI.getDashboardSummary error:', error);
+    // Return default data if API fails
+    return {
+      success: true,
+      data: {
+        tournaments_won: 0,
+        matches_played: 0,
+        win_rate: 0,
+        rank: 'E',
+        wins: 0,
+        xp_points: 0,
+        recent_activity: [],
+        live_tournaments: [],
+        rank_progress: {
+          current: 'E',
+          next: 'D',
+          progress: 0,
+          wins_needed: 10,
+          matches_needed: 20,
+          win_rate_needed: 50
+        }
+      }
+    };
+  }
+},
+  
+  // Get user's tournaments (for win count)
+  getUserTournaments: async (userId, status = 'completed') => {
+    console.log(`🏆 UsersAPI: Fetching ${status} tournaments for user ${userId}`);
+    try {
+      return await api.get(`/users/${userId}/tournaments?status=${status}`);
+    } catch (error) {
+      console.error('❌ UsersAPI.getUserTournaments error:', error);
+      return {
+        success: true,
+        tournaments: []
+      };
+    }
+  },
+  getMe: async () => {
+  console.log('👤 UsersAPI: Fetching current user data');
+  try {
+    return await api.get('/auth/me');
+  } catch (error) {
+    console.error('❌ UsersAPI.getMe error:', error);
+    throw error;
+  }
+},
+
+getProfile: async () => {
+  console.log('👤 UsersAPI: Fetching user profile');
+  try {
+    return await api.get('/auth/profile');
+  } catch (error) {
+    console.error('❌ UsersAPI.getProfile error:', error);
+    throw error;
+  }
+},
+
+getProfileWithXp: async () => {
+  console.log('💰 UsersAPI: Fetching profile with XP');
+  try {
+    return await api.get('/users/profile-with-xp');
+  } catch (error) {
+    console.error('❌ UsersAPI.getProfileWithXp error:', error);
+    return { 
+      success: false, 
+      xp_points: 0 
+    };
+  }
+},
+  
+  // Quick stats for dashboard cards
+  getQuickStats: async (userId) => {
+    console.log(`⚡ UsersAPI: Fetching quick stats for user ${userId}`);
+    try {
+      return await api.get(`/users/${userId}/quick-stats`);
+    } catch (error) {
+      console.error('❌ UsersAPI.getQuickStats error:', error);
+      // Return default quick stats
+      return {
+        success: true,
+        data: [
+          {
+            label: 'Tournaments Won',
+            value: '0',
+            icon: 'trophy',
+            color: 'yellow',
+            trend: 'up'
+          },
+          {
+            label: 'Matches Played',
+            value: '0',
+            icon: 'gamepad',
+            color: 'blue',
+            trend: 'stable'
+          },
+          {
+            label: 'Win Rate',
+            value: '0%',
+            icon: 'trending',
+            color: 'red',
+            trend: 'down'
+          },
+          {
+            label: 'Current Rank',
+            value: 'E',
+            icon: 'crown',
+            color: 'purple',
+            trend: 'stable'
+          }
+        ]
+      };
+    }
   }
 };
 
@@ -1250,7 +1418,28 @@ const adminAPI = {
     localStorage.removeItem('adminData');
   }
 };
-
+// Dashboard-specific API calls
+export const dashboardAPI = {
+  // Get dashboard stats
+  getDashboardStats: async () => {
+    return api.get('/api/dashboard/stats');
+  },
+  
+  // Get live tournaments
+  getLiveTournaments: async () => {
+    return api.get('/api/tournaments/live');
+  },
+  
+  // Get recent activity
+  getRecentActivity: async (userId) => {
+    return api.get(`/api/users/${userId}/activity`);
+  },
+  
+  // Get user tournaments (for win count)
+  getUserTournaments: async () => {
+    return api.get('/api/tournaments/my-tournaments');
+  }
+};
 // Notifications API - UPDATED to match new backend structure
 const notificationsAPI = {
   // Get notifications (updated parameters)

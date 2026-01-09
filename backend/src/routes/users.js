@@ -184,6 +184,9 @@ router.get('/search', authenticateToken, async (req, res) => {
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
     const userId = req.params.id;
+    const currentUserId = req.user.id;
+    
+    console.log('🔵 GET USER BY ID: Requested', userId, 'Current user:', currentUserId);
     
     const [users] = await db.execute(
       `SELECT u.id, u.username, u.email, u.firstname, u.lastname, u.profile_pic, 
@@ -198,18 +201,38 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
 
     if (users.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
     }
 
-    // Get user's equipped title
-    const [titles] = await db.execute(
-      `SELECT t.name, t.tier, t.color, t.icon, t.description
-       FROM user_titles ut
-       JOIN titles t ON ut.title_id = t.id
-       WHERE ut.user_id = ? AND ut.is_equipped = 1
-       LIMIT 1`,
-      [userId]
-    );
+    let userData = users[0];
+    
+    // HIDE SENSITIVE DATA if viewing other user's profile
+    if (parseInt(userId) !== parseInt(currentUserId)) {
+      userData = {
+        ...userData,
+        email: 'hidden@example.com',
+        wallet_account_number: '********',
+        balance: 0,
+        is_admin: false
+      };
+    }
+
+    // Get user's equipped title (only if viewing own profile)
+    let equipped_title = null;
+    if (parseInt(userId) === parseInt(currentUserId)) {
+      const [titles] = await db.execute(
+        `SELECT t.name, t.tier, t.color, t.icon, t.description
+         FROM user_titles ut
+         JOIN titles t ON ut.title_id = t.id
+         WHERE ut.user_id = ? AND ut.is_equipped = 1
+         LIMIT 1`,
+        [userId]
+      );
+      equipped_title = titles.length > 0 ? titles[0] : null;
+    }
 
     // Get user stats from user_stats table
     const [stats] = await db.execute(
@@ -218,8 +241,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
     );
 
     const user = {
-      ...users[0],
-      equipped_title: titles.length > 0 ? titles[0] : null,
+      ...userData,
+      equipped_title: equipped_title,
       stats: stats.length > 0 ? stats[0] : null
     };
 
@@ -229,7 +252,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Get user by ID error:', error);
-    res.status(500).json({ error: 'Failed to fetch user profile' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch user profile' 
+    });
   }
 });
 
@@ -523,7 +549,179 @@ router.get('/:id/rank-progress', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch rank progress' });
   }
 });
-
+// GET /api/users/:id/dashboard - Get dashboard summary
+router.get('/:id/dashboard', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const currentUserId = req.user.id;
+    
+    console.log('🔵 DASHBOARD: Requested for user', userId, 'Current user:', currentUserId);
+    
+    // Allow viewing own dashboard OR public view of others
+    const isOwnDashboard = parseInt(userId) === parseInt(currentUserId);
+    
+    // Get user stats
+    const [users] = await db.execute(`
+      SELECT 
+        u.wins,
+        u.matches_played,
+        u.win_rate,
+        u.rank,
+        u.tournaments_won,
+        u.xp_points
+      FROM users u
+      WHERE u.id = ?
+    `, [userId]);
+    
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+    
+    const user = users[0];
+    
+    // Get recent activity (last 5 matches) - always public
+    const [recentMatches] = await db.execute(`
+      SELECT 
+        m.*,
+        CASE 
+          WHEN m.winner_id = ? THEN 'win'
+          WHEN m.winner_id IS NOT NULL AND m.winner_id != ? THEN 'loss'
+          ELSE 'match'
+        END as type,
+        CASE 
+          WHEN m.winner_id = ? THEN u2.username
+          ELSE u1.username
+        END as opponent_name,
+        m.game
+      FROM matches m
+      LEFT JOIN users u1 ON m.player1_id = u1.id
+      LEFT JOIN users u2 ON m.player2_id = u2.id
+      WHERE (m.player1_id = ? OR m.player2_id = ?)
+        AND m.status = 'completed'
+      ORDER BY m.completed_at DESC
+      LIMIT 5
+    `, [userId, userId, userId, userId, userId]);
+    
+    // Format activity
+    const recentActivity = recentMatches.map(match => ({
+      type: match.type,
+      description: match.type === 'win' 
+        ? `Defeated ${match.opponent_name || 'Opponent'}`
+        : match.type === 'loss'
+        ? `Lost to ${match.opponent_name || 'Opponent'}`
+        : `Match vs ${match.opponent_name || 'Opponent'}`,
+      game: match.game || 'Unknown',
+      timestamp: match.completed_at,
+      xp: match.type === 'win' ? 100 : 0
+    }));
+    
+    // Get live tournaments user is in (only for own dashboard)
+    let liveTournaments = [];
+    if (isOwnDashboard) {
+      try {
+        const [tournaments] = await db.execute(`
+          SELECT DISTINCT 
+            t.id,
+            t.name,
+            t.game,
+            t.type,
+            t.prize_pool,
+            t.max_players
+          FROM tournaments t
+          WHERE t.status = 'ongoing'
+            AND t.creator_id = ?
+          LIMIT 3
+        `, [userId]);
+        liveTournaments = tournaments;
+      } catch (error) {
+        console.log('No live tournaments:', error.message);
+      }
+    }
+    
+    // Calculate rank progress
+    const currentRank = user.rank || 'E';
+    const rankOrder = ['E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
+    const currentIndex = rankOrder.indexOf(currentRank);
+    const nextRank = currentIndex < rankOrder.length - 1 ? rankOrder[currentIndex + 1] : null;
+    
+    // Simple progress calculation
+    const winsProgress = Math.min(100, (user.wins || 0) / 10 * 100);
+    const matchesProgress = Math.min(100, (user.matches_played || 0) / 20 * 100);
+    const winRateProgress = Math.min(100, (parseFloat(user.win_rate) || 0) / 50 * 100);
+    const overallProgress = Math.round((winsProgress + matchesProgress + winRateProgress) / 3);
+    
+    const rankProgress = {
+      current: currentRank,
+      next: nextRank,
+      progress: overallProgress,
+      wins_needed: 10,
+      matches_needed: 20,
+      win_rate_needed: 50
+    };
+    
+    res.json({
+      success: true,
+      data: {
+        tournaments_won: user.tournaments_won || 0,
+        matches_played: user.matches_played || 0,
+        win_rate: parseFloat(user.win_rate) || 0,
+        rank: currentRank,
+        wins: user.wins || 0,
+        xp_points: user.xp_points || 0,
+        recent_activity: recentActivity,
+        live_tournaments: liveTournaments,
+        rank_progress: rankProgress,
+        is_own_dashboard: isOwnDashboard
+      }
+    });
+    
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch dashboard data'
+    });
+  }
+});
+// In users.js
+router.get('/:id/stats', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    
+    const [stats] = await db.execute(`
+      SELECT 
+        u.wins,
+        u.matches_played,
+        u.win_rate,
+        u.rank,
+        u.tournaments_won,
+        u.xp_points,
+        COALESCE(COUNT(DISTINCT CASE WHEN t.status = 'completed' AND t.winner_id = u.id THEN t.id END), 0) as tournament_wins
+      FROM users u
+      LEFT JOIN tournaments t ON t.winner_id = u.id
+      WHERE u.id = ?
+      GROUP BY u.id
+    `, [userId]);
+    
+    res.json({
+      success: true,
+      data: stats[0] || {
+        wins: 0,
+        matches_played: 0,
+        win_rate: 0,
+        rank: 'E',
+        tournaments_won: 0,
+        xp_points: 0,
+        tournament_wins: 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // Get user's earned titles
 router.get('/:id/titles', authenticateToken, async (req, res) => {
   try {
@@ -684,31 +882,6 @@ router.post('/set-pin', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user stats for profile
-router.get('/:id/stats', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.params.id;
-    
-    const [userStats] = await db.execute(
-      `SELECT username, rank, matches_played, wins, losses, win_rate, profile_pic, created_at
-       FROM users 
-       WHERE id = ?`,
-      [userId]
-    );
-
-    if (userStats.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({
-      success: true,
-      data: userStats[0]
-    });
-  } catch (error) {
-    console.error('Get user stats error:', error);
-    res.status(500).json({ error: 'Failed to fetch user stats' });
-  }
-});
 
 // Get user's match history
 router.get('/:id/match-history', authenticateToken, async (req, res) => {

@@ -34,14 +34,39 @@ export const AuthProvider = ({ children }) => {
       const data = await authAPI.getProfile();
       console.log('🔵 AUTHCONTEXT: Profile response:', data);
       
-      if (data.success) {
-        setUser(data.user);
-        console.log('✅ AUTHCONTEXT: User profile loaded');
+      // FIXED: Handle both API response formats
+      let userData = null;
+      
+      if (data && data.success !== undefined) {
+        // Format: { success: true, user: {...} }
+        if (data.success && data.user) {
+          userData = data.user;
+          console.log('✅ AUTHCONTEXT: User loaded from success format');
+        }
+      } else if (data && data.user) {
+        // Format: { user: {...} } 
+        userData = data.user;
+        console.log('✅ AUTHCONTEXT: User loaded from user format');
+      } else if (data) {
+        // Format: direct user object
+        userData = data;
+        console.log('✅ AUTHCONTEXT: User loaded from direct format');
+      }
+      
+      if (userData) {
+        setUser(userData);
+        console.log('✅ AUTHCONTEXT: User profile loaded successfully');
       } else {
-        console.warn('⚠️ AUTHCONTEXT: Profile fetch returned false');
+        console.warn('⚠️ AUTHCONTEXT: No user data found in response');
+        // Token might be invalid, clear it
+        removeToken();
+        setTokenState(null);
       }
     } catch (error) {
       console.error('❌ AUTHCONTEXT: Profile fetch error:', error.message);
+      // Clear invalid token
+      removeToken();
+      setTokenState(null);
     } finally {
       setLoading(false);
     }
@@ -53,16 +78,35 @@ export const AuthProvider = ({ children }) => {
       const data = await authAPI.login({ email, password });
       console.log('🔵 AUTHCONTEXT: Login response:', data);
 
-      const authToken = data.accessToken || data.token;
-      if (!authToken) throw new Error('No token in response');
+      // FIXED: Handle both response formats
+      let authToken = null;
+      let userData = null;
+      
+      if (data && data.accessToken) {
+        authToken = data.accessToken;
+        userData = data.user;
+      } else if (data && data.token) {
+        authToken = data.token;
+        userData = data.user;
+      } else if (data && data.data && data.data.accessToken) {
+        authToken = data.data.accessToken;
+        userData = data.data.user;
+      } else if (data && data.data && data.data.token) {
+        authToken = data.data.token;
+        userData = data.data.user;
+      }
+      
+      if (!authToken) {
+        throw new Error('No token in response');
+      }
 
       // Use universal setToken (stores in both places)
       setToken(authToken);
       setTokenState(authToken);
-      setUser(data.user);
+      setUser(userData);
 
       console.log('✅ AUTHCONTEXT: Login successful');
-      return { success: true, user: data.user };
+      return { success: true, user: userData };
     } catch (error) {
       console.error('❌ AUTHCONTEXT: Login error:', error.message);
       return { success: false, error: error.message };

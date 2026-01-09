@@ -139,7 +139,7 @@ app.use('/api/tournaments', authenticateToken, tournamentRoutes);
 app.use('/api/matches', authenticateToken, matchRoutes);
 // Add wallet routes (requires authentication)
 app.use('/api/wallet', authenticateToken, walletRoutes);
-app.use('/api/notifications', notificationsRouter);
+app.use('/api/notifications', authenticateToken, notificationsRouter);
 
 // Initialize Socket.io
 initializeSocket(io);
