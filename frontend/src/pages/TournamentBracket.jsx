@@ -39,7 +39,9 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
           tournamentType: response.bracket?.tournament_type,
           totalMatches: response.bracket?.total_matches,
           hasWinner: !!response.bracket?.winner,
-          winnerName: response.bracket?.winner?.username
+          winnerName: response.bracket?.winner?.username,
+          isCreator: isCreator,
+          currentUserId: currentUser?.id
         };
         
         console.log('📊 Bracket data received:', debugData);
@@ -63,7 +65,7 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
     } finally {
       setLoading(false);
     }
-  }, [tournamentId]);
+  }, [tournamentId, isCreator, currentUser]);
 
   // Initial fetch
   useEffect(() => {
@@ -124,16 +126,27 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
   };
 
   const handleManualAdvance = async (match) => {
-    if (!isCreator || !match.winner_id) return;
+    if (!match?.winner?.id) {
+      alert('Match must have a winner to advance');
+      return;
+    }
     
-    if (!confirm(`Manually advance winner ${match.winner?.username || match.winner_id} to next round?`)) {
+    console.log('🔧 Manual advance clicked:', {
+      matchId: match.id,
+      winnerId: match.winner.id,
+      winnerName: match.winner.username,
+      isCreator: isCreator,
+      tournamentId: tournamentId
+    });
+    
+    if (!confirm(`Manually advance winner ${match.winner.username} to next round?`)) {
       return;
     }
     
     try {
       setManualAdvancing(true);
       
-      const result = await tournamentsAPI.manualAdvance(tournamentId, match.id, match.winner_id);
+      const result = await tournamentsAPI.manualAdvance(tournamentId, match.id, match.winner.id);
       
       if (result.success) {
         alert('✅ Winner advanced to next round!');
@@ -244,6 +257,7 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
               {bracket?.status === 'upcoming' ? 'Tournament starts soon' : 
                bracket?.status === 'ongoing' ? 'Live tournament in progress' : 
                'Tournament completed'}
+              {isCreator && ' (You are creator)'}
             </p>
           </div>
         </div>
@@ -286,6 +300,21 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
           <div className="flex items-center space-x-2 text-red-400">
             <AlertCircle className="w-5 h-5" />
             <span>{error}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Debug info */}
+      {debugInfo && process.env.NODE_ENV === 'development' && (
+        <div className="mb-4 p-3 bg-gray-800/50 rounded-lg text-xs">
+          <div className="text-yellow-400 mb-1">Debug Info:</div>
+          <div className="grid grid-cols-2 gap-1">
+            <div>Tournament ID: {debugInfo.tournamentId}</div>
+            <div>Status: {debugInfo.status}</div>
+            <div>Type: {debugInfo.tournamentType}</div>
+            <div>Participants: {debugInfo.participantCount}</div>
+            <div>Is Creator: {debugInfo.isCreator?.toString()}</div>
+            <div>Your User ID: {debugInfo.currentUserId}</div>
           </div>
         </div>
       )}
@@ -364,6 +393,11 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
                         className={`w-64 p-4 rounded-lg border ${getMatchStatusColor(match.status)} cursor-pointer hover:border-purple-500/50 transition-colors`}
                         onClick={() => handleMatchClick(match)}
                       >
+                        {/* DEBUG INFO */}
+                        <div className="text-xs bg-blue-900/20 p-1 mb-1 rounded text-blue-300">
+                          Match {match.id}: {match.status}
+                        </div>
+                        
                         <div className="flex justify-between items-center mb-2">
                           <span className="text-xs text-gray-400">
                             Match {match.id}
@@ -406,7 +440,7 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
                           </div>
                         </div>
                         
-                        {/* Winner indicator with MANUAL ADVANCE BUTTON */}
+                        {/* WINNER DISPLAY WITH ADVANCE BUTTON */}
                         {match.winner && (
                           <div className="mt-3 pt-3 border-t border-gray-700">
                             <div className="flex items-center justify-between">
@@ -416,31 +450,41 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
                                 <span className="text-green-400 font-medium" title={match.winner.username}>
                                   {match.winner.username}
                                 </span>
+                                <span className="text-xs text-gray-500">(ID: {match.winner.id})</span>
                               </div>
                               
-                              {/* MANUAL ADVANCE BUTTON - ALWAYS VISIBLE FOR TESTING */}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleManualAdvance(match);
-                                }}
-                                disabled={manualAdvancing}
-                                className="ml-2 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded text-white disabled:opacity-50 flex items-center space-x-1"
-                                title="Manually advance winner to next round"
-                              >
-                                {manualAdvancing ? (
-                                  <>
-                                    <Loader className="w-3 h-3 animate-spin" />
-                                    <span>Advancing...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <span>Advance</span>
-                                    <ChevronRight className="w-3 h-3" />
-                                  </>
-                                )}
-                              </button>
+                              {/* ADVANCE BUTTON - Always show for completed matches in ongoing tournaments */}
+                              {match.status === 'completed' && bracket?.status === 'ongoing' && isCreator && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleManualAdvance(match);
+                                  }}
+                                  disabled={manualAdvancing}
+                                  className="ml-2 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded text-white disabled:opacity-50 flex items-center space-x-1"
+                                  title="Manually advance winner to next round"
+                                >
+                                  {manualAdvancing ? (
+                                    <>
+                                      <Loader className="w-3 h-3 animate-spin" />
+                                      <span>Advancing...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span>Advance</span>
+                                      <ChevronRight className="w-3 h-3" />
+                                    </>
+                                  )}
+                                </button>
+                              )}
                             </div>
+                            
+                            {/* DEBUG: Show why button might not be showing */}
+                            {match.status === 'completed' && bracket?.status === 'ongoing' && !isCreator && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                (Only tournament creator can advance winners)
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

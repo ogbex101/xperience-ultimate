@@ -435,19 +435,29 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // Get match details
-const [matches] = await connection.query(`
-  SELECT tm.*, t.type as tournament_type, t.prize_pool, t.xp_entry_fee as entry_fee,
-         t.prize_pool_option, t.custom_prize_pool
-  FROM tournament_matches tm
-  JOIN tournaments t ON tm.tournament_id = t.id
-  WHERE tm.id = ? AND tm.tournament_id = ?
-`, [matchId, tournamentId]);
+      // Get match details WITH DEBUG
+      const [matches] = await connection.query(`
+        SELECT tm.*, t.type as tournament_type, t.prize_pool, t.xp_entry_fee as entry_fee,
+               t.prize_pool_option, t.custom_prize_pool, t.name as tournament_name
+        FROM tournament_matches tm
+        JOIN tournaments t ON tm.tournament_id = t.id
+        WHERE tm.id = ? AND tm.tournament_id = ?
+      `, [matchId, tournamentId]);
+      
       if (matches.length === 0) {
         throw new Error('Match not found');
       }
 
       const match = matches[0];
+
+      console.log('🔍 Match details:', {
+        matchId,
+        player1: match.player1_id,
+        player2: match.player2_id,
+        currentStatus: match.status,
+        tournamentType: match.tournament_type,
+        tournamentName: match.tournament_name
+      });
 
       // Check if user is participant
       if (match.player1_id !== userId && match.player2_id !== userId) {
@@ -478,6 +488,8 @@ const [matches] = await connection.query(`
         SET winner_id = ?, status = 'completed', completed_at = NOW()
         WHERE id = ?
       `, [winnerId, matchId]);
+
+      console.log(`✅ Match ${matchId} marked as completed. Winner: ${winnerId}`);
 
       // Record in match_history
       await connection.query(`
@@ -526,8 +538,9 @@ const [matches] = await connection.query(`
         );
       }
 
+      // Update user ranks
       await updateUserRank(winnerId, connection);
-await updateUserRank(loserId, connection);
+      await updateUserRank(loserId, connection);
 
       // Record match proof if provided
       if (proof) {
@@ -555,20 +568,21 @@ await updateUserRank(loserId, connection);
         VALUES (?, ?, ?, ?, ?, NOW())
       `, [winnerId, loserId, winner[0]?.rank || 'E', loser[0]?.rank || 'E', matchId]);
 
-     // For 1v1 tournaments, advance winner to next round
-console.log(`🔍 DEBUG: tournament_type = "${match.tournament_type}", should advance = ${match.tournament_type === '1v1'}`);
-
-if (match.tournament_type === '1v1') {
-  console.log(`🏆 Tournament is 1v1, advancing winner ${winnerId} to next round`);
-  const nextMatchId = await advanceWinnerToNextRound(tournamentId, matchId, winnerId, match.round_number, connection);
-  if (nextMatchId) {
-    console.log(`✅ Winner ${winnerId} advanced to match ${nextMatchId}`);
-  } else {
-    console.log(`❌ Failed to advance winner to next round`);
-  }
-} else {
-  console.log(`ℹ️ Tournament type is ${match.tournament_type}, not advancing winner`);
-}
+      // CRITICAL FIX: For 1v1 tournaments, advance winner to next round
+      console.log(`🔍 DEBUG TOURNAMENT TYPE CHECK: tournament_type = "${match.tournament_type}"`);
+      console.log(`🔍 Should advance: ${match.tournament_type === '1v1' || match.tournament_type === 'onevsone'}`);
+      
+      if (match.tournament_type === '1v1' || match.tournament_type === 'onevsone') {
+        console.log(`🏆 Tournament is 1v1, advancing winner ${winnerId} to next round`);
+        const nextMatchId = await advanceWinnerToNextRound(tournamentId, matchId, winnerId, match.round_number, connection);
+        if (nextMatchId) {
+          console.log(`✅ Winner ${winnerId} advanced to match ${nextMatchId}`);
+        } else {
+          console.log(`❌ Failed to advance winner to next round`);
+        }
+      } else {
+        console.log(`ℹ️ Tournament type is "${match.tournament_type}", not advancing winner`);
+      }
 
       // Check if tournament is completed
       const tournamentCompleted = await checkTournamentCompletion(tournamentId, false, connection);
@@ -582,7 +596,7 @@ if (match.tournament_type === '1v1') {
         `, [
           winnerId,
           userId,
-          `You won your match in tournament!`,
+          `You won your match in tournament ${match.tournament_name}!`,
           matchId,
           tournamentId
         ]),
@@ -594,7 +608,7 @@ if (match.tournament_type === '1v1') {
         `, [
           loserId,
           userId,
-          `Match result submitted for tournament.`,
+          `Match result submitted for tournament ${match.tournament_name}.`,
           matchId,
           tournamentId
         ])
@@ -603,13 +617,13 @@ if (match.tournament_type === '1v1') {
       // Commit transaction
       await connection.commit();
 
-      console.log(`✅ Match ${matchId} completed. Winner: ${winnerId}`);
+      console.log(`✅ Match ${matchId} completed successfully. Winner: ${winnerId}`);
 
       res.json({
         success: true,
         message: 'Match result submitted successfully!',
         tournament_completed: tournamentCompleted,
-        winner_advanced: match.tournament_type === 'onevsone'
+        winner_advanced: match.tournament_type === 'onevsone' || match.tournament_type === '1v1'
       });
 
     } catch (error) {
@@ -668,12 +682,12 @@ router.get('/:id/matches', authenticate, async (req, res) => {
     });
   }
 });
-// POST /api/tournaments/:id/manual-advance - Manually advance winner to next round
+// POST /api/tournaments/:id/manual-advance - Manually advance winner to next round (FIXED)
 router.post('/:id/manual-advance', authenticate, async (req, res) => {
   let connection;
   try {
     const tournamentId = req.params.id;
-    const userId = req.user.id;
+    const userId = req.user.userId || req.user.id;
     const { match_id, winner_id } = req.body;
 
     console.log('🔧 Manual advance request:', { tournamentId, match_id, winner_id, userId });
@@ -722,28 +736,56 @@ router.post('/:id/manual-advance', authenticate, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid winner selection' });
     }
 
+    console.log(`🔧 Starting manual advance for match ${match_id} (round ${match.round_number}) to next round`);
+    
     // Get connection for transaction
     connection = await db.pool.promise().getConnection();
     await connection.beginTransaction();
 
     try {
-      console.log(`🔧 Manually advancing winner ${winner_id} from match ${match_id} (round ${match.round_number})`);
-      
       // Call the advance function
+      console.log(`🔧 Manually advancing winner ${winner_id} from match ${match_id}`);
       const nextMatchId = await advanceWinnerToNextRound(tournamentId, match_id, winner_id, match.round_number, connection);
       
       if (!nextMatchId) {
-        throw new Error('Failed to advance winner');
+        console.log(`❌ advanceWinnerToNextRound returned null`);
+        throw new Error('Failed to advance winner to next round');
+      }
+
+      console.log(`✅ Successfully advanced to match ${nextMatchId}`);
+      
+      // Check if next match now has both players and update its status
+      const [nextMatch] = await connection.query(`
+        SELECT player1_id, player2_id, status
+        FROM tournament_matches 
+        WHERE id = ?
+      `, [nextMatchId]);
+      
+      if (nextMatch.length > 0 && nextMatch[0].player1_id && nextMatch[0].player2_id) {
+        if (nextMatch[0].status === 'upcoming') {
+          // Schedule the match for 15 minutes from now
+          const matchTime = new Date(Date.now() + 15 * 60000);
+          await connection.query(
+            `UPDATE tournament_matches SET match_time = ? WHERE id = ?`,
+            [matchTime, nextMatchId]
+          );
+          console.log(`⏰ Next match ${nextMatchId} scheduled for ${matchTime}`);
+        }
       }
 
       await connection.commit();
 
       // Get updated bracket for response
       const [updatedMatches] = await db.execute(`
-        SELECT id, round_number, player1_id, player2_id, status
-        FROM tournament_matches 
-        WHERE tournament_id = ?
-        ORDER BY round_number, id
+        SELECT tm.id, tm.round_number, 
+               p1.username as player1_name, 
+               p2.username as player2_name,
+               tm.status
+        FROM tournament_matches tm
+        LEFT JOIN users p1 ON tm.player1_id = p1.id
+        LEFT JOIN users p2 ON tm.player2_id = p2.id
+        WHERE tm.tournament_id = ?
+        ORDER BY tm.round_number, tm.id
       `, [tournamentId]);
 
       console.log('✅ Manual advance successful');
@@ -757,6 +799,7 @@ router.post('/:id/manual-advance', authenticate, async (req, res) => {
 
     } catch (error) {
       await connection.rollback();
+      console.error('❌ Manual advance transaction error:', error);
       throw error;
     } finally {
       if (connection) connection.release();
@@ -766,7 +809,12 @@ router.post('/:id/manual-advance', authenticate, async (req, res) => {
     console.error('❌ Manual advance error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to manually advance: ' + error.message
+      error: 'Failed to manually advance: ' + error.message,
+      debug: {
+        tournamentId: req.params.id,
+        matchId: req.body?.match_id,
+        winnerId: req.body?.winner_id
+      }
     });
   }
 });
@@ -3664,11 +3712,11 @@ async function broadcastTournamentNotification(tournamentId, message, excludeUse
 
 async function advanceWinnerToNextRound(tournamentId, matchId, winnerId, currentRound, connection) {
   try {
+    console.log(`🔧 ADVANCE FUNCTION START: tournament=${tournamentId}, match=${matchId}, winner=${winnerId}, round=${currentRound}`);
+    
     const nextRound = currentRound + 1;
     
-    console.log(`🏃 Advancing winner ${winnerId} from match ${matchId} (round ${currentRound}) to round ${nextRound}`);
-    
-    // REMOVE the status filter - we need to find match 27 even if it's not 'upcoming' yet
+    // Find matches in the next round
     const [nextMatches] = await connection.query(`
       SELECT id, player1_id, player2_id, status
       FROM tournament_matches 
@@ -3683,79 +3731,102 @@ async function advanceWinnerToNextRound(tournamentId, matchId, winnerId, current
       console.log(`❌ No matches found for round ${nextRound}`);
       return null;
     }
-    
-    // SIMPLE BRACKET LOGIC for 4 players:
-    // Match 25 winner -> Match 27 player1
-    // Match 26 winner -> Match 27 player2
-    
-    let targetMatchId = 27; // The final match ID
-    let targetSlot = null;
-    
-    // Determine which slot based on current match ID
-    if (matchId === 25) {
-      targetSlot = 'player1';
-      console.log(`🎯 Match 25 winner -> Match 27 player1`);
-    } else if (matchId === 26) {
-      targetSlot = 'player2';
-      console.log(`🎯 Match 26 winner -> Match 27 player2`);
-    } else {
-      console.log(`❌ Unknown match ID: ${matchId}`);
+
+    // Get all matches in current round to determine position
+    const [currentMatches] = await connection.query(`
+      SELECT id, player1_id, player2_id, winner_id
+      FROM tournament_matches 
+      WHERE tournament_id = ? AND round_number = ?
+      ORDER BY id ASC
+    `, [tournamentId, currentRound]);
+
+    console.log(`📊 Found ${currentMatches.length} matches in round ${currentRound}:`, currentMatches);
+
+    // Find our match index in current round
+    const matchIndex = currentMatches.findIndex(m => m.id === matchId);
+    console.log(`🎯 Match ${matchId} is at index ${matchIndex} in round ${currentRound}`);
+
+    if (matchIndex === -1) {
+      console.log(`❌ Could not find match ${matchId} in round ${currentRound}`);
       return null;
     }
-    
-    // Find match 27
-    const targetMatch = nextMatches.find(m => m.id === targetMatchId);
-    if (!targetMatch) {
-      console.log(`❌ Could not find target match ${targetMatchId} in round ${nextRound}`);
+
+    // Determine which next match to fill
+    // Pairing logic: matches 0-1 -> next match 0, matches 2-3 -> next match 1, etc.
+    const nextMatchIndex = Math.floor(matchIndex / 2);
+    console.log(`🎯 Next match index: ${nextMatchIndex}`);
+
+    if (nextMatchIndex >= nextMatches.length) {
+      console.log(`❌ No next match found at index ${nextMatchIndex}`);
       return null;
     }
+
+    const targetMatch = nextMatches[nextMatchIndex];
+    const targetMatchId = targetMatch.id;
     
-    console.log(`🎯 Target match ${targetMatchId}: P1=${targetMatch.player1_id}, P2=${targetMatch.player2_id}, Status=${targetMatch.status}`);
-    
-    // Fill the appropriate slot
-    if (targetSlot === 'player1') {
-      if (targetMatch.player1_id) {
-        console.log(`⚠️ Match ${targetMatchId} player1 already filled with ${targetMatch.player1_id}`);
-        return null;
+    // Determine which slot to fill (even index -> player1, odd index -> player2)
+    const targetSlot = matchIndex % 2 === 0 ? 'player1' : 'player2';
+    console.log(`🎯 Filling ${targetSlot} in match ${targetMatchId}`);
+
+    // Check if slot is already filled
+    if (targetSlot === 'player1' && targetMatch.player1_id) {
+      console.log(`⚠️ Match ${targetMatchId} player1 already filled with ${targetMatch.player1_id}`);
+      // Check if it's the same winner (could be duplicate submission)
+      if (targetMatch.player1_id === winnerId) {
+        console.log(`✅ Same winner already in position, returning match ID`);
+        return targetMatchId;
       }
-      
+      return null;
+    }
+    
+    if (targetSlot === 'player2' && targetMatch.player2_id) {
+      console.log(`⚠️ Match ${targetMatchId} player2 already filled with ${targetMatch.player2_id}`);
+      if (targetMatch.player2_id === winnerId) {
+        console.log(`✅ Same winner already in position, returning match ID`);
+        return targetMatchId;
+      }
+      return null;
+    }
+
+    // Update the database
+    if (targetSlot === 'player1') {
       await connection.query(
         `UPDATE tournament_matches SET player1_id = ? WHERE id = ?`,
         [winnerId, targetMatchId]
       );
-      console.log(`✅ Assigned winner ${winnerId} to player1 in match ${targetMatchId}`);
-      
-    } else if (targetSlot === 'player2') {
-      if (targetMatch.player2_id) {
-        console.log(`⚠️ Match ${targetMatchId} player2 already filled with ${targetMatch.player2_id}`);
-        return null;
-      }
-      
+      console.log(`✅ Updated match ${targetMatchId} player1 = ${winnerId}`);
+    } else {
       await connection.query(
         `UPDATE tournament_matches SET player2_id = ? WHERE id = ?`,
         [winnerId, targetMatchId]
       );
-      console.log(`✅ Assigned winner ${winnerId} to player2 in match ${targetMatchId}`);
+      console.log(`✅ Updated match ${targetMatchId} player2 = ${winnerId}`);
     }
-    
-    // Check if both slots are now filled
+
+    // Log the updated state
     const [updated] = await connection.query(
       `SELECT player1_id, player2_id FROM tournament_matches WHERE id = ?`,
       [targetMatchId]
     );
     
-    console.log(`🔍 After update - Match ${targetMatchId}: P1=${updated[0]?.player1_id}, P2=${updated[0]?.player2_id}`);
-    
-    // If both players assigned, update match time
+    console.log(`📊 After update - Match ${targetMatchId}: P1=${updated[0]?.player1_id}, P2=${updated[0]?.player2_id}`);
+
+    // Check if match is now ready (both players assigned)
     if (updated[0]?.player1_id && updated[0]?.player2_id) {
-      const nextMatchTime = new Date(Date.now() + 15 * 60000);
-      await connection.query(
-        `UPDATE tournament_matches SET match_time = ? WHERE id = ?`,
-        [nextMatchTime, targetMatchId]
-      );
-      console.log(`🚀 Match ${targetMatchId} scheduled for ${nextMatchTime}`);
+      console.log(`🎯 Match ${targetMatchId} now has both players!`);
+      
+      // If match was in "waiting" state, update to "upcoming"
+      if (targetMatch.status === 'waiting' || !targetMatch.status) {
+        const nextMatchTime = new Date(Date.now() + 15 * 60000); // 15 minutes from now
+        await connection.query(
+          `UPDATE tournament_matches SET status = 'upcoming', match_time = ? WHERE id = ?`,
+          [nextMatchTime, targetMatchId]
+        );
+        console.log(`🚀 Match ${targetMatchId} scheduled for ${nextMatchTime}`);
+      }
     }
-    
+
+    console.log(`🔧 ADVANCE FUNCTION END: Successfully advanced to match ${targetMatchId}`);
     return targetMatchId;
 
   } catch (error) {
