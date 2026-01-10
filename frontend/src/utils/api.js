@@ -646,6 +646,27 @@ const tournamentsAPI = {
   leaveTournament: async (tournamentId) => {
     console.log(`🏆 TournamentsAPI: Leaving tournament ${tournamentId}`);
     return await api.post(`/tournaments/${tournamentId}/leave`);
+  },
+   getMatches: async (tournamentId) => {
+    console.log(`🎮 TournamentsAPI: Fetching matches for tournament ${tournamentId}`);
+    return await api.get(`/tournaments/${tournamentId}/matches`);
+  },
+   fixMatches: async (tournamentId) => {
+    console.log(`🔧 TournamentsAPI: Fixing matches for tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/fix-matches`);
+  },
+  manualAdvance: async (tournamentId, matchId, winnerId) => {
+    console.log(`🔧 TournamentsAPI: Manually advancing winner ${winnerId} from match ${matchId}`);
+    return await api.post(`/tournaments/${tournamentId}/manual-advance`, {
+      match_id: matchId,
+      winner_id: winnerId
+    });
+  },
+  
+  // NEW: Fix tournament matches
+  fixMatches: async (tournamentId) => {
+    console.log(`🔧 TournamentsAPI: Fixing matches for tournament ${tournamentId}`);
+    return await api.post(`/tournaments/${tournamentId}/fix-matches`);
   }
 };
 

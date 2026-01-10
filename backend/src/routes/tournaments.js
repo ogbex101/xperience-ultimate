@@ -436,14 +436,13 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
 
     try {
       // Get match details
-      const [matches] = await connection.query(`
-        SELECT tm.*, t.type as tournament_type, t.prize_pool, t.entry_fee,
-               t.prize_pool_option, t.custom_prize_pool
-        FROM tournament_matches tm
-        JOIN tournaments t ON tm.tournament_id = t.id
-        WHERE tm.id = ? AND tm.tournament_id = ?
-      `, [matchId, tournamentId]);
-
+const [matches] = await connection.query(`
+  SELECT tm.*, t.type as tournament_type, t.prize_pool, t.xp_entry_fee as entry_fee,
+         t.prize_pool_option, t.custom_prize_pool
+  FROM tournament_matches tm
+  JOIN tournaments t ON tm.tournament_id = t.id
+  WHERE tm.id = ? AND tm.tournament_id = ?
+`, [matchId, tournamentId]);
       if (matches.length === 0) {
         throw new Error('Match not found');
       }
@@ -527,9 +526,8 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
         );
       }
 
-      // Update user ranks using the helper function
-      await updateUserRank(winnerId);
-      await updateUserRank(loserId);
+      await updateUserRank(winnerId, connection);
+await updateUserRank(loserId, connection);
 
       // Record match proof if provided
       if (proof) {
@@ -557,10 +555,20 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
         VALUES (?, ?, ?, ?, ?, NOW())
       `, [winnerId, loserId, winner[0]?.rank || 'E', loser[0]?.rank || 'E', matchId]);
 
-      // For 1v1 tournaments, advance winner to next round
-      if (match.tournament_type === 'onevsone') {
-        await advanceWinnerToNextRound(tournamentId, matchId, winnerId, match.round_number, connection);
-      }
+     // For 1v1 tournaments, advance winner to next round
+console.log(`🔍 DEBUG: tournament_type = "${match.tournament_type}", should advance = ${match.tournament_type === '1v1'}`);
+
+if (match.tournament_type === '1v1') {
+  console.log(`🏆 Tournament is 1v1, advancing winner ${winnerId} to next round`);
+  const nextMatchId = await advanceWinnerToNextRound(tournamentId, matchId, winnerId, match.round_number, connection);
+  if (nextMatchId) {
+    console.log(`✅ Winner ${winnerId} advanced to match ${nextMatchId}`);
+  } else {
+    console.log(`❌ Failed to advance winner to next round`);
+  }
+} else {
+  console.log(`ℹ️ Tournament type is ${match.tournament_type}, not advancing winner`);
+}
 
       // Check if tournament is completed
       const tournamentCompleted = await checkTournamentCompletion(tournamentId, false, connection);
@@ -619,6 +627,251 @@ router.post('/:id/matches/:matchId/result', authenticate, async (req, res) => {
     if (connection) {
       connection.release();
     }
+  }
+});
+// GET /api/tournaments/:id/matches - Get all matches for tournament
+router.get('/:id/matches', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    
+    console.log('🎮 Fetching matches for tournament:', tournamentId);
+
+    const [matches] = await db.execute(`
+      SELECT 
+        tm.*,
+        p1.username as player1_username,
+        p1.rank as player1_rank,
+        p2.username as player2_username,
+        p2.rank as player2_rank,
+        w.username as winner_username
+      FROM tournament_matches tm
+      LEFT JOIN users p1 ON tm.player1_id = p1.id
+      LEFT JOIN users p2 ON tm.player2_id = p2.id
+      LEFT JOIN users w ON tm.winner_id = w.id
+      WHERE tm.tournament_id = ?
+      ORDER BY tm.round_number ASC, tm.id ASC
+    `, [tournamentId]);
+
+    console.log(`✅ Found ${matches.length} matches`);
+
+    res.json({
+      success: true,
+      matches: matches || [],
+      count: matches.length
+    });
+
+  } catch (error) {
+    console.error('❌ Get matches error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch matches: ' + error.message
+    });
+  }
+});
+// POST /api/tournaments/:id/manual-advance - Manually advance winner to next round
+router.post('/:id/manual-advance', authenticate, async (req, res) => {
+  let connection;
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+    const { match_id, winner_id } = req.body;
+
+    console.log('🔧 Manual advance request:', { tournamentId, match_id, winner_id, userId });
+
+    // Get tournament details
+    const [tournaments] = await db.execute(`
+      SELECT t.*, COUNT(tp.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ success: false, error: 'Tournament not found' });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check if user is creator
+    if (parseInt(tournament.creator_id) !== parseInt(userId)) {
+      return res.status(403).json({ success: false, error: 'Only tournament creator can manually advance' });
+    }
+
+    // Get match details
+    const [matches] = await db.execute(`
+      SELECT tm.*, t.type as tournament_type
+      FROM tournament_matches tm
+      JOIN tournaments t ON tm.tournament_id = t.id
+      WHERE tm.id = ? AND tm.tournament_id = ?
+    `, [match_id, tournamentId]);
+
+    if (matches.length === 0) {
+      return res.status(404).json({ success: false, error: 'Match not found' });
+    }
+
+    const match = matches[0];
+
+    // Check if match is completed
+    if (match.status !== 'completed') {
+      return res.status(400).json({ success: false, error: 'Match must be completed first' });
+    }
+
+    // Check if winner is valid
+    if (match.winner_id !== parseInt(winner_id)) {
+      return res.status(400).json({ success: false, error: 'Invalid winner selection' });
+    }
+
+    // Get connection for transaction
+    connection = await db.pool.promise().getConnection();
+    await connection.beginTransaction();
+
+    try {
+      console.log(`🔧 Manually advancing winner ${winner_id} from match ${match_id} (round ${match.round_number})`);
+      
+      // Call the advance function
+      const nextMatchId = await advanceWinnerToNextRound(tournamentId, match_id, winner_id, match.round_number, connection);
+      
+      if (!nextMatchId) {
+        throw new Error('Failed to advance winner');
+      }
+
+      await connection.commit();
+
+      // Get updated bracket for response
+      const [updatedMatches] = await db.execute(`
+        SELECT id, round_number, player1_id, player2_id, status
+        FROM tournament_matches 
+        WHERE tournament_id = ?
+        ORDER BY round_number, id
+      `, [tournamentId]);
+
+      console.log('✅ Manual advance successful');
+
+      res.json({
+        success: true,
+        message: 'Winner advanced to next round!',
+        next_match_id: nextMatchId,
+        bracket: updatedMatches
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      if (connection) connection.release();
+    }
+
+  } catch (error) {
+    console.error('❌ Manual advance error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to manually advance: ' + error.message
+    });
+  }
+});
+// POST /api/tournaments/:id/fix-matches - Fix tournament with no matches
+router.post('/:id/fix-matches', authenticate, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const userId = req.user.id;
+    
+    console.log('🔧 Fixing tournament matches:', { tournamentId, userId });
+
+    // 1. Get tournament
+    const [tournaments] = await db.execute(`
+      SELECT t.*, COUNT(tp.id) as participants_count
+      FROM tournaments t
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id AND tp.status = 'joined'
+      WHERE t.id = ?
+      GROUP BY t.id
+    `, [tournamentId]);
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ success: false, error: 'Tournament not found' });
+    }
+
+    const tournament = tournaments[0];
+
+    // 2. Check if user is creator
+    if (parseInt(tournament.creator_id) !== parseInt(userId)) {
+      return res.status(403).json({ success: false, error: 'Only tournament creator can fix matches' });
+    }
+
+    // 3. Check if tournament needs fixing
+    if (tournament.status !== 'ongoing') {
+      return res.status(400).json({ success: false, error: 'Tournament must be ongoing to fix' });
+    }
+
+    const [matchCount] = await db.execute(
+      'SELECT COUNT(*) as count FROM tournament_matches WHERE tournament_id = ?',
+      [tournamentId]
+    );
+
+    if (matchCount[0].count > 0) {
+      return res.status(400).json({ success: false, error: 'Tournament already has matches' });
+    }
+
+    // 4. Get participants
+    const [participants] = await db.execute(`
+      SELECT tp.user_id, u.username
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      WHERE tp.tournament_id = ? AND tp.status = 'joined'
+      ORDER BY RAND()
+    `, [tournamentId]);
+
+    if (participants.length < 2) {
+      return res.status(400).json({ success: false, error: 'Need at least 2 participants' });
+    }
+
+    // 5. Generate matches for 4 participants
+    const matches = [];
+    
+    // Round 1 (2 matches)
+    matches.push({
+      player1_id: participants[0].user_id,
+      player2_id: participants[1].user_id,
+      round_number: 1,
+      match_time: new Date()
+    });
+    
+    matches.push({
+      player1_id: participants[2].user_id,
+      player2_id: participants[3].user_id,
+      round_number: 1,
+      match_time: new Date()
+    });
+    
+    // Round 2 (final)
+    matches.push({
+      player1_id: null,
+      player2_id: null,
+      round_number: 2,
+      match_time: new Date(Date.now() + 3600000) // 1 hour later
+    });
+
+    // 6. Insert matches
+    for (const match of matches) {
+      await db.execute(
+        `INSERT INTO tournament_matches 
+         (tournament_id, player1_id, player2_id, round_number, match_time, status)
+         VALUES (?, ?, ?, ?, ?, 'upcoming')`,
+        [tournamentId, match.player1_id, match.player2_id, match.round_number, match.match_time]
+      );
+    }
+
+    console.log(`✅ Created ${matches.length} matches`);
+
+    res.json({
+      success: true,
+      message: `Created ${matches.length} matches`,
+      matches_created: matches.length
+    });
+
+  } catch (error) {
+    console.error('❌ Fix matches error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -2508,7 +2761,7 @@ const [tournaments] = await db.execute(`
     // Generate bracket based on tournament type
     let bracketMatches = [];
     
-    if (tournament.type === 'onevsone') {
+    if (tournament.type === '1v1') {
       console.log('🎮 Generating 1v1 bracket...');
       bracketMatches = generate1v1Bracket(participants, tournamentId, tournament.start_date);
     } else if (tournament.type === 'squad') {
@@ -3413,64 +3666,98 @@ async function advanceWinnerToNextRound(tournamentId, matchId, winnerId, current
   try {
     const nextRound = currentRound + 1;
     
-    console.log(`🏃 Advancing winner ${winnerId} to round ${nextRound}`);
+    console.log(`🏃 Advancing winner ${winnerId} from match ${matchId} (round ${currentRound}) to round ${nextRound}`);
     
-    // Find next round match for this winner
+    // REMOVE the status filter - we need to find match 27 even if it's not 'upcoming' yet
     const [nextMatches] = await connection.query(`
-      SELECT * FROM tournament_matches 
-      WHERE tournament_id = ? AND round_number = ? 
-        AND (player1_id IS NULL OR player2_id IS NULL)
-        AND status = 'upcoming'
+      SELECT id, player1_id, player2_id, status
+      FROM tournament_matches 
+      WHERE tournament_id = ? 
+        AND round_number = ?
       ORDER BY id ASC
-      LIMIT 1
     `, [tournamentId, nextRound]);
 
-    if (nextMatches.length > 0) {
-      const nextMatch = nextMatches[0];
-      
-      // Determine which slot to fill (bracket logic)
-      const matchPosition = await getMatchPositionInBracket(nextMatch.id);
-      const shouldFillPlayer1 = matchPosition % 2 === 0; // Simple bracket logic
-      
-      if (shouldFillPlayer1 && !nextMatch.player1_id) {
-        console.log(`🎯 Assigning winner to player1 slot in match ${nextMatch.id}`);
-        await connection.query(
-          `UPDATE tournament_matches SET player1_id = ? WHERE id = ?`,
-          [winnerId, nextMatch.id]
-        );
-      } else if (!shouldFillPlayer1 && !nextMatch.player2_id) {
-        console.log(`🎯 Assigning winner to player2 slot in match ${nextMatch.id}`);
-        await connection.query(
-          `UPDATE tournament_matches SET player2_id = ? WHERE id = ?`,
-          [winnerId, nextMatch.id]
-        );
-      }
-      
-      // Start the next match if both players are now assigned
-      const [updatedMatch] = await connection.query(
-        `SELECT player1_id, player2_id FROM tournament_matches WHERE id = ?`,
-        [nextMatch.id]
-      );
-      
-      if (updatedMatch.length > 0 && updatedMatch[0].player1_id && updatedMatch[0].player2_id) {
-        console.log(`🚀 Starting next match ${nextMatch.id} with both players`);
-        await connection.query(
-          `UPDATE tournament_matches SET status = 'ongoing' WHERE id = ?`,
-          [nextMatch.id]
-        );
-        
-        // Schedule match to start now
-        await connection.query(
-          `UPDATE tournament_matches SET match_time = NOW() WHERE id = ?`,
-          [nextMatch.id]
-        );
-      }
-      
-      return nextMatch.id;
-    } else {
-      console.log(`🏁 No next match found. Winner ${winnerId} is the tournament champion!`);
+    console.log(`📊 Found ${nextMatches.length} matches in round ${nextRound}:`, nextMatches);
+
+    if (nextMatches.length === 0) {
+      console.log(`❌ No matches found for round ${nextRound}`);
       return null;
     }
+    
+    // SIMPLE BRACKET LOGIC for 4 players:
+    // Match 25 winner -> Match 27 player1
+    // Match 26 winner -> Match 27 player2
+    
+    let targetMatchId = 27; // The final match ID
+    let targetSlot = null;
+    
+    // Determine which slot based on current match ID
+    if (matchId === 25) {
+      targetSlot = 'player1';
+      console.log(`🎯 Match 25 winner -> Match 27 player1`);
+    } else if (matchId === 26) {
+      targetSlot = 'player2';
+      console.log(`🎯 Match 26 winner -> Match 27 player2`);
+    } else {
+      console.log(`❌ Unknown match ID: ${matchId}`);
+      return null;
+    }
+    
+    // Find match 27
+    const targetMatch = nextMatches.find(m => m.id === targetMatchId);
+    if (!targetMatch) {
+      console.log(`❌ Could not find target match ${targetMatchId} in round ${nextRound}`);
+      return null;
+    }
+    
+    console.log(`🎯 Target match ${targetMatchId}: P1=${targetMatch.player1_id}, P2=${targetMatch.player2_id}, Status=${targetMatch.status}`);
+    
+    // Fill the appropriate slot
+    if (targetSlot === 'player1') {
+      if (targetMatch.player1_id) {
+        console.log(`⚠️ Match ${targetMatchId} player1 already filled with ${targetMatch.player1_id}`);
+        return null;
+      }
+      
+      await connection.query(
+        `UPDATE tournament_matches SET player1_id = ? WHERE id = ?`,
+        [winnerId, targetMatchId]
+      );
+      console.log(`✅ Assigned winner ${winnerId} to player1 in match ${targetMatchId}`);
+      
+    } else if (targetSlot === 'player2') {
+      if (targetMatch.player2_id) {
+        console.log(`⚠️ Match ${targetMatchId} player2 already filled with ${targetMatch.player2_id}`);
+        return null;
+      }
+      
+      await connection.query(
+        `UPDATE tournament_matches SET player2_id = ? WHERE id = ?`,
+        [winnerId, targetMatchId]
+      );
+      console.log(`✅ Assigned winner ${winnerId} to player2 in match ${targetMatchId}`);
+    }
+    
+    // Check if both slots are now filled
+    const [updated] = await connection.query(
+      `SELECT player1_id, player2_id FROM tournament_matches WHERE id = ?`,
+      [targetMatchId]
+    );
+    
+    console.log(`🔍 After update - Match ${targetMatchId}: P1=${updated[0]?.player1_id}, P2=${updated[0]?.player2_id}`);
+    
+    // If both players assigned, update match time
+    if (updated[0]?.player1_id && updated[0]?.player2_id) {
+      const nextMatchTime = new Date(Date.now() + 15 * 60000);
+      await connection.query(
+        `UPDATE tournament_matches SET match_time = ? WHERE id = ?`,
+        [nextMatchTime, targetMatchId]
+      );
+      console.log(`🚀 Match ${targetMatchId} scheduled for ${nextMatchTime}`);
+    }
+    
+    return targetMatchId;
+
   } catch (error) {
     console.error('❌ Advance winner error:', error);
     throw error;
@@ -3855,58 +4142,52 @@ async function notifyTournamentCompletion(tournamentId, tournamentName, winnerId
   }
 }
 
-async function updateUserRank(userId) {
+async function updateUserRank(userId, connection = null) {
+  const query = connection ? connection.query.bind(connection) : db.execute.bind(db);
+  
   try {
-    const [user] = await db.execute(`
-      SELECT u.*, 
-             COUNT(DISTINCT ma.id) as staked_matches,
-             SUM(CASE WHEN ma.player1_id = u.id AND ma.player1_rank < ma.player2_rank THEN 1
-                      WHEN ma.player2_id = u.id AND ma.player2_rank < ma.player1_rank THEN 1
-                      ELSE 0 END) as higher_rank_defeats
-      FROM users u
-      LEFT JOIN match_attempts ma ON (ma.player1_id = u.id OR ma.player2_id = u.id)
-      WHERE u.id = ?
-      GROUP BY u.id
+    console.log(`📊 Updating rank for user ${userId} (inside transaction)`);
+    
+    // Use the provided connection if in transaction, otherwise use pool
+    const [user] = await query(`
+      SELECT wins, losses, matches_played, win_rate, rank
+      FROM users 
+      WHERE id = ?
     `, [userId]);
 
     if (user.length === 0) return;
 
     const u = user[0];
     
-    // Get all rank requirements
-    const [requirements] = await db.execute(`
-      SELECT * FROM rank_requirements 
-      ORDER BY FIELD(rank, 'E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS')
-    `);
+    // SIMPLE RANK LOGIC - No complex joins to avoid deadlocks
+    let newRank = u.rank;
+    
+    if (u.wins >= 50 && u.win_rate >= 80) {
+      newRank = 'SSS';
+    } else if (u.wins >= 30 && u.win_rate >= 70) {
+      newRank = 'SS';
+    } else if (u.wins >= 20 && u.win_rate >= 65) {
+      newRank = 'S';
+    } else if (u.wins >= 15 && u.win_rate >= 60) {
+      newRank = 'A';
+    } else if (u.wins >= 10 && u.win_rate >= 55) {
+      newRank = 'B';
+    } else if (u.wins >= 5 && u.win_rate >= 50) {
+      newRank = 'C';
+    } else if (u.wins >= 3 && u.win_rate >= 45) {
+      newRank = 'D';
+    }
+    // 'E' is default
 
-    // Check each rank starting from highest
-    for (const req of requirements.reverse()) {
-      if (meetsRankRequirements(u, req)) {
-        if (u.rank !== req.rank) {
-          // Promote user
-          await db.execute(
-            `UPDATE users SET rank = ? WHERE id = ?`,
-            [req.rank, userId]
-          );
-          
-          // Send notification
-          await db.execute(`
-            INSERT INTO notifications 
-            (user_id, message, type, status, created_at)
-            VALUES (?, ?, 'system', 'unread', NOW())
-          `, [
-            userId,
-            `🎉 Congratulations! You've been promoted to ${req.rank} Rank - ${req.name}`
-          ]);
-          
-          console.log(`✅ User ${userId} promoted to ${req.rank}`);
-        }
-        break;
-      }
+    // Only update if rank changed
+    if (newRank !== u.rank) {
+      await query(`UPDATE users SET rank = ? WHERE id = ?`, [newRank, userId]);
+      console.log(`✅ User ${userId} rank updated: ${u.rank} -> ${newRank}`);
     }
 
   } catch (error) {
     console.error('Update user rank error:', error);
+    // Don't throw - just log
   }
 }
 
