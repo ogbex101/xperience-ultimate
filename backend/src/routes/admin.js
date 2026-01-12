@@ -293,11 +293,15 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       (SELECT SUM(xp_points) FROM users) as total_xp,
       (SELECT COUNT(*) FROM withdrawal_requests WHERE status = 'pending') as pending_withdrawals,
       (SELECT COUNT(*) FROM transactions WHERE DATE(created_at) = CURDATE()) as today_transactions,
-      (SELECT SUM(amount) FROM transactions WHERE DATE(created_at) = CURDATE() AND amount > 0) as today_deposits,
-      (SELECT COUNT(*) FROM fraud_flags WHERE status = 'active') as active_fraud_flags
+      (SELECT SUM(amount) FROM transactions WHERE DATE(created_at) = CURDATE() AND type = 'deposit') as today_deposits,
+      (SELECT COUNT(*) FROM fraud_flags WHERE status = 'active') as active_fraud_flags,
+      (SELECT COUNT(*) FROM matches WHERE status = 'ongoing') as ongoing_matches,
+      (SELECT COUNT(*) FROM tournaments WHERE status = 'ongoing') as ongoing_tournaments,
+      (SELECT COUNT(*) FROM groups WHERE DATE(created_at) = CURDATE()) as today_groups,
+      (SELECT COUNT(*) FROM groups) as total_groups
     `);
 
-    // Recent activity
+    // Recent withdrawals (already have)
     const [recentWithdrawals] = await db.execute(`SELECT 
       wr.*, u.username, u.email 
       FROM withdrawal_requests wr
@@ -306,25 +310,65 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       ORDER BY wr.created_at DESC
       LIMIT 10`);
 
-    // Recent users
+    // Recent users (already have)
     const [recentUsers] = await db.execute(`SELECT 
       id, username, email, balance, xp_points, created_at 
       FROM users 
       ORDER BY created_at DESC 
       LIMIT 5`);
 
+    // Ongoing matches
+    const [ongoingMatches] = await db.execute(`SELECT 
+      m.*, 
+      p1.username as player1_username,
+      p2.username as player2_username,
+      w.username as winner_username
+      FROM matches m
+      LEFT JOIN users p1 ON m.player1_id = p1.id
+      LEFT JOIN users p2 ON m.player2_id = p2.id
+      LEFT JOIN users w ON m.winner_id = w.id
+      WHERE m.status = 'ongoing'
+      ORDER BY m.created_at DESC
+      LIMIT 5`);
+
+    // Ongoing tournaments
+    const [ongoingTournaments] = await db.execute(`SELECT 
+      t.*, 
+      c.username as creator_username,
+      w.username as winner_username
+      FROM tournaments t
+      LEFT JOIN users c ON t.creator_id = c.id
+      LEFT JOIN users w ON t.winner_id = w.id
+      WHERE t.status = 'ongoing'
+      ORDER BY t.start_date ASC
+      LIMIT 5`);
+
+    // Recent groups
+    const [recentGroups] = await db.execute(`SELECT 
+      g.*, 
+      u.username as creator_username,
+      (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id AND gm.status = 'joined') as member_count
+      FROM groups g
+      JOIN users u ON g.creator_id = u.id
+      ORDER BY g.created_at DESC
+      LIMIT 5`);
+
     res.json({
       success: true,
       stats: stats[0],
       recent_withdrawals: recentWithdrawals,
-      recent_users: recentUsers
+      recent_users: recentUsers,
+      ongoing_matches: ongoingMatches,
+      ongoing_tournaments: ongoingTournaments,
+      recent_groups: recentGroups
     });
 
   } catch (error) {
     console.error('❌ Dashboard stats error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to fetch dashboard stats' 
+      message: 'Failed to fetch dashboard stats',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -669,6 +713,365 @@ router.get('/users/:id', authenticateAdmin, async (req, res) => {
     });
   }
 });
+// ==================== USER MANAGEMENT ENDPOINTS ====================
+
+// Update user
+router.put('/users/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+    const adminId = req.admin.id;
+
+    console.log('✏️ Updating user ID:', id, 'Data:', updateData);
+
+    // Get current user data
+    const [users] = await db.execute(
+      'SELECT * FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const currentUser = users[0];
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+    
+    // Define allowed fields to update
+    const allowedFields = [
+      'username', 'email', 'firstname', 'lastname', 'rank',
+      'account_status', 'xp_points', 'is_admin', 'is_banned',
+      'enable_2fa', 'login_alerts', 'session_timeout', 'bio',
+      'favorite_games', 'balance'
+    ];
+
+    for (const field of allowedFields) {
+      if (field in updateData) {
+        updateFields.push(`${field} = ?`);
+        updateValues.push(updateData[field]);
+      }
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid fields to update'
+      });
+    }
+
+    // Add updated_at timestamp
+    updateFields.push('updated_at = NOW()');
+    
+    // Add WHERE clause
+    updateValues.push(id);
+
+    const updateQuery = `
+      UPDATE users 
+      SET ${updateFields.join(', ')} 
+      WHERE id = ?
+    `;
+
+    await db.execute(updateQuery, updateValues);
+
+    // Log admin activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id) 
+       VALUES (?, 'user_update', 'Updated user profile', ?)`,
+      [adminId, id]
+    );
+
+    // Get updated user
+    const [updatedUsers] = await db.execute(
+      'SELECT * FROM users WHERE id = ?',
+      [id]
+    );
+
+    console.log('✅ User updated successfully');
+
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      user: updatedUsers[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Update user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user'
+    });
+  }
+});
+
+// Ban/Unban user
+router.post('/users/:id/ban', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isBanned, reason } = req.body;
+    const adminId = req.admin.id;
+
+    console.log(`🚫 ${isBanned ? 'Banning' : 'Unbanning'} user ID:`, id, 'Reason:', reason);
+
+    // Check if user exists
+    const [users] = await db.execute(
+      'SELECT id, username, is_banned FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const currentUser = users[0];
+
+    // Update user
+    await db.execute(
+      'UPDATE users SET is_banned = ?, account_status = ?, updated_at = NOW() WHERE id = ?',
+      [isBanned ? 1 : 0, isBanned ? 'suspended' : 'active', id]
+    );
+
+    // Log admin activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id, details) 
+       VALUES (?, 'user_ban', ?, ?, ?)`,
+      [adminId, 
+       isBanned ? 'Banned user' : 'Unbanned user',
+       id,
+       JSON.stringify({ reason, previous_status: currentUser.is_banned ? 'banned' : 'active' })]
+    );
+
+    console.log('✅ User ban status updated successfully');
+
+    res.json({
+      success: true,
+      message: `User ${isBanned ? 'banned' : 'unbanned'} successfully`,
+      is_banned: isBanned
+    });
+
+  } catch (error) {
+    console.error('❌ User ban error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user ban status'
+    });
+  }
+});
+
+// Update user balance
+router.post('/users/:id/balance', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, reason } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('💰 Updating balance for user ID:', id, 'Amount:', amount, 'Reason:', reason);
+
+    if (!amount || isNaN(parseFloat(amount))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid amount is required'
+      });
+    }
+
+    // Get current user balance
+    const [users] = await db.execute(
+      'SELECT id, username, balance FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const currentUser = users[0];
+    const newBalance = parseFloat(currentUser.balance) + parseFloat(amount);
+
+    // Update balance
+    await db.execute(
+      'UPDATE users SET balance = ?, updated_at = NOW() WHERE id = ?',
+      [newBalance, id]
+    );
+
+    // Create transaction record
+    const transactionId = uuidv4();
+    await db.execute(
+      `INSERT INTO transactions 
+       (id, user_id, type, amount, status, description, admin_id, previous_balance, new_balance) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionId,
+        id,
+        amount >= 0 ? 'admin_adjustment_add' : 'admin_adjustment_deduct',
+        Math.abs(parseFloat(amount)),
+        'completed',
+        reason || 'Admin balance adjustment',
+        adminId,
+        parseFloat(currentUser.balance),
+        newBalance
+      ]
+    );
+
+    // Log admin activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id, details) 
+       VALUES (?, 'balance_adjustment', 'Adjusted user balance', ?, ?)`,
+      [adminId, id, JSON.stringify({
+        amount,
+        previous_balance: currentUser.balance,
+        new_balance: newBalance,
+        reason
+      })]
+    );
+
+    console.log('✅ User balance updated successfully');
+
+    res.json({
+      success: true,
+      message: 'Balance updated successfully',
+      previous_balance: parseFloat(currentUser.balance),
+      new_balance: newBalance,
+      adjustment: parseFloat(amount)
+    });
+
+  } catch (error) {
+    console.error('❌ Update balance error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user balance'
+    });
+  }
+});
+
+// Delete user
+router.delete('/users/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+
+    console.log('🗑️ Deleting user ID:', id);
+
+    // Check if user exists
+    const [users] = await db.execute(
+      'SELECT id, username, is_admin FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const user = users[0];
+
+    // Prevent deleting admin users
+    if (user.is_admin) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete admin users'
+      });
+    }
+
+    // Soft delete - mark as deleted instead of actual deletion
+    await db.execute(
+      'UPDATE users SET account_status = "deleted", is_banned = 1, updated_at = NOW() WHERE id = ?',
+      [id]
+    );
+
+    // Log admin activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id) 
+       VALUES (?, 'user_delete', 'Deleted user account', ?)`,
+      [adminId, id]
+    );
+
+    console.log('✅ User marked as deleted successfully');
+
+    res.json({
+      success: true,
+      message: 'User deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete user'
+    });
+  }
+});
+
+// Get user stats (for dashboard)
+router.get('/users/:id/stats', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log('📊 Fetching stats for user ID:', id);
+
+    const [userStats] = await db.execute(`
+      SELECT 
+        u.id,
+        u.username,
+        u.email,
+        u.rank,
+        u.matches_played,
+        u.wins,
+        u.losses,
+        u.win_rate,
+        u.balance,
+        u.xp_points,
+        u.tournaments_played,
+        u.tournaments_won,
+        u.created_at,
+        u.last_seen,
+        u.account_status,
+        u.is_banned,
+        u.is_admin,
+        (SELECT COUNT(*) FROM transactions WHERE user_id = u.id) as total_transactions,
+        (SELECT COUNT(*) FROM withdrawal_requests WHERE user_id = u.id) as total_withdrawals,
+        (SELECT COUNT(*) FROM matches WHERE (player1_id = u.id OR player2_id = u.id) AND status = 'completed') as completed_matches,
+        (SELECT COUNT(*) FROM tournament_participants WHERE user_id = u.id) as tournaments_participated
+      FROM users u
+      WHERE u.id = ?
+    `, [id]);
+
+    if (userStats.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      stats: userStats[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Get user stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user stats'
+    });
+  }
+});
 
 // ==================== SYSTEM SETTINGS ====================
 router.get('/settings', authenticateAdmin, async (req, res) => {
@@ -766,5 +1169,390 @@ router.get('/fraud/flags', authenticateAdmin, async (req, res) => {
     });
   }
 });
+// ==================== TRANSACTIONS MANAGEMENT ====================
+router.get('/transactions', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      type, 
+      status, 
+      page = 1, 
+      limit = 20,
+      search 
+    } = req.query;
+    
+    const offset = (page - 1) * limit;
+    
+    console.log('💰 Admin: Fetching transactions - Type:', type, 'Status:', status, 'Page:', page, 'Search:', search);
 
+    let query = `
+      SELECT t.*, u.username, u.email, u.wallet_account_number
+      FROM transactions t
+      JOIN users u ON t.user_id = u.id
+      WHERE 1=1
+    `;
+    
+    let countQuery = `
+      SELECT COUNT(*) as total 
+      FROM transactions t
+      JOIN users u ON t.user_id = u.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    const countParams = [];
+
+    // Apply filters
+    if (type && type !== '') {
+      query += ' AND t.type = ?';
+      countQuery += ' AND t.type = ?';
+      params.push(type);
+      countParams.push(type);
+    }
+    
+    if (status && status !== '') {
+      query += ' AND t.status = ?';
+      countQuery += ' AND t.status = ?';
+      params.push(status);
+      countParams.push(status);
+    }
+    
+    // Apply search
+    if (search) {
+      const searchTerm = `%${search}%`;
+      query += ' AND (t.reference LIKE ? OR u.username LIKE ? OR u.email LIKE ? OR u.wallet_account_number LIKE ?)';
+      countQuery += ' AND (t.reference LIKE ? OR u.username LIKE ? OR u.email LIKE ? OR u.wallet_account_number LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+      countParams.push(searchTerm, searchTerm, searchTerm, searchTerm);
+    }
+    
+    // Order and pagination
+    query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    // Execute queries
+    const [transactions] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    // Log activity
+    try {
+      await db.execute(
+        `INSERT INTO admin_activity_logs 
+         (admin_id, action_type, description) 
+         VALUES (?, 'view', 'Viewed transactions list')`,
+        [req.admin.id]
+      );
+    } catch (logError) {
+      console.warn('⚠️ Could not log activity:', logError.message);
+    }
+
+    console.log('✅ Found', transactions.length, 'transactions');
+
+    res.json({
+      success: true,
+      transactions,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get transactions error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch transactions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/transactions/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching transaction statistics');
+    
+    const [stats] = await db.execute(`
+      SELECT 
+        (SELECT COUNT(*) FROM transactions) as total,
+        (SELECT SUM(amount) FROM transactions WHERE status = 'completed' AND amount > 0) as totalAmount,
+        (SELECT COUNT(*) FROM transactions WHERE status = 'pending') as pending,
+        (SELECT COUNT(*) FROM transactions WHERE status = 'completed') as completed,
+        (SELECT COUNT(*) FROM transactions WHERE status = 'failed') as failed,
+        (SELECT COUNT(*) FROM transactions WHERE DATE(created_at) = CURDATE()) as todayCount,
+        (SELECT SUM(amount) FROM transactions WHERE DATE(created_at) = CURDATE() AND amount > 0) as todayAmount
+    `);
+
+    console.log('✅ Transaction stats fetched:', stats[0]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total: 0,
+        totalAmount: 0,
+        pending: 0,
+        completed: 0,
+        failed: 0,
+        todayCount: 0,
+        todayAmount: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get transaction stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch transaction statistics'
+    });
+  }
+});
+
+router.get('/transactions/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🔍 Admin: Fetching transaction details for ID:', id);
+
+    const [transactions] = await db.execute(`
+      SELECT t.*, 
+             u.username, 
+             u.email,
+             u.wallet_account_number
+      FROM transactions t
+      JOIN users u ON t.user_id = u.id
+      WHERE t.id = ?
+    `, [id]);
+
+    if (transactions.length === 0) {
+      console.log('❌ Transaction not found:', id);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Transaction not found' 
+      });
+    }
+
+    const transaction = transactions[0];
+
+    // Get withdrawal request if exists
+    let withdrawalRequest = null;
+    if (transaction.type === 'withdrawal') {
+      const [withdrawals] = await db.execute(
+        'SELECT * FROM withdrawal_requests WHERE transaction_id = ?',
+        [id]
+      );
+      withdrawalRequest = withdrawals[0] || null;
+    }
+
+    console.log('✅ Transaction details fetched:', transaction.reference);
+
+    res.json({
+      success: true,
+      transaction: transaction,
+      withdrawalRequest: withdrawalRequest
+    });
+
+  } catch (error) {
+    console.error('❌ Get transaction details error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch transaction details' 
+    });
+  }
+});
+
+router.put('/transactions/:id/status', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('⚡ Admin: Updating transaction status:', { 
+      transactionId: id, 
+      newStatus: status,
+      adminId 
+    });
+
+    if (!['pending', 'completed', 'failed', 'pending_approval', 'approved'].includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid status' 
+      });
+    }
+
+    // Get current transaction
+    const [transactions] = await db.execute(
+      'SELECT * FROM transactions WHERE id = ?',
+      [id]
+    );
+
+    if (transactions.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Transaction not found' 
+      });
+    }
+
+    const transaction = transactions[0];
+    const oldStatus = transaction.status;
+
+    // FIXED: Use your withTransaction helper
+    await db.withTransaction(async (connection) => {
+      try {
+        // Update transaction status
+        await connection.execute(
+          'UPDATE transactions SET status = ?, completed_at = IF(status != "completed" AND ? = "completed", NOW(), completed_at), updated_at = NOW() WHERE id = ?',
+          [status, status, id]
+        );
+
+        // Also update withdrawal_requests table if it's a withdrawal
+        if (transaction.type === 'withdrawal') {
+          await connection.execute(
+            'UPDATE withdrawal_requests SET status = ?, processed_by = ?, processed_at = NOW() WHERE transaction_id = ?',
+            [status === 'completed' ? 'processing' : status, adminId, id]
+          );
+        }
+
+        // Handle balance adjustments
+        if (status === 'completed' && oldStatus !== 'completed') {
+          // For deposits: Add to user balance
+          if (transaction.type === 'deposit' && transaction.amount > 0) {
+            await connection.execute(
+              'UPDATE users SET balance = balance + ? WHERE id = ?',
+              [transaction.amount, transaction.user_id]
+            );
+            console.log(`✅ Added ${transaction.amount} to user ${transaction.user_id} balance`);
+          }
+          // For withdrawals: No balance change needed on completion
+        }
+        
+        // Handle refunds/rejections for withdrawals
+        if (transaction.type === 'withdrawal' && (status === 'failed' || status === 'rejected') && oldStatus === 'pending_approval') {
+          // Refund back to user (withdrawals have negative amounts, so we add back)
+          await connection.execute(
+            'UPDATE users SET balance = balance + ABS(?) WHERE id = ?',
+            [transaction.amount, transaction.user_id]
+          );
+          console.log(`✅ Refunded ${Math.abs(transaction.amount)} to user ${transaction.user_id} for failed withdrawal`);
+        }
+
+        // Log the status change - FIXED: Removed details column
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, affected_user_id, affected_transaction_id) 
+           VALUES (?, 'transaction_status', ?, ?, ?)`,
+          [adminId, 
+           `Updated transaction #${id} from ${oldStatus} to ${status}`,
+           transaction.user_id, 
+           id]
+        );
+
+        console.log('💾 Transaction status updated successfully');
+        
+        // Transaction will auto-commit if no error
+      } catch (error) {
+        console.error('❌ Error within transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Transaction status updated successfully',
+      new_status: status
+    });
+
+  } catch (error) {
+    console.error('❌ Update transaction status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update transaction status',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+router.post('/transactions/:id/refund', authenticateAdmin, async (req, res) => {
+  let refundResult, refundReference;
+  
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('💸 Admin: Processing refund for transaction ID:', id);
+
+    // Get transaction (must be a completed deposit)
+    const [transactions] = await db.execute(
+      'SELECT * FROM transactions WHERE id = ? AND type = "deposit" AND status = "completed"',
+      [id]
+    );
+
+    if (transactions.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Completed deposit transaction not found' 
+      });
+    }
+
+    const transaction = transactions[0];
+
+    // Generate reference
+    refundReference = `REFUND-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    // FIXED: Use your withTransaction helper
+    await db.withTransaction(async (connection) => {
+      try {
+        // Create refund transaction
+        [refundResult] = await connection.execute(
+          `INSERT INTO transactions 
+           (user_id, amount, currency, type, status, reference, description, external_reference) 
+           VALUES (?, ?, ?, 'refund', 'completed', ?, ?, ?)`,
+          [
+            transaction.user_id,
+            -Math.abs(transaction.amount), // Negative amount for refund
+            transaction.currency,
+            refundReference,
+            reason || 'Admin refund for deposit',
+            transaction.reference
+          ]
+        );
+
+        // Deduct from user balance
+        await connection.execute(
+          'UPDATE users SET balance = balance - ? WHERE id = ?',
+          [Math.abs(transaction.amount), transaction.user_id]
+        );
+
+        // Log activity - FIXED: Removed details column
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, affected_user_id, affected_transaction_id) 
+           VALUES (?, 'transaction_refund', ?, ?, ?)`,
+          [adminId, 
+           `Refunded transaction #${id} - ${transaction.amount} ${transaction.currency}`,
+           transaction.user_id, 
+           id]
+        );
+
+        console.log('✅ Refund processed successfully');
+      } catch (error) {
+        console.error('❌ Error within refund transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Refund processed successfully',
+      refund_id: refundResult.insertId,
+      refund_reference: refundReference,
+      amount: Math.abs(transaction.amount)
+    });
+
+  } catch (error) {
+    console.error('❌ Process refund error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to process refund' 
+    });
+  }
+});
 module.exports = router;

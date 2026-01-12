@@ -1198,17 +1198,16 @@ const adminAPI = {
     console.log(`👥 AdminAPI: Fetching stats for user ${id}`);
     return await adminApi.get(`/admin/users/${id}/stats`);
   },
-  
-  // Transactions Management
-  getTransactions: async (type = '', status = '', page = 1, limit = 50) => {
-    console.log(`💰 AdminAPI: Fetching transactions`);
-    const params = new URLSearchParams();
-    if (type) params.append('type', type);
-    if (status) params.append('status', status);
-    if (page) params.append('page', page);
-    if (limit) params.append('limit', limit);
-    return await adminApi.get(`/admin/transactions?${params}`);
-  },
+getTransactions: async (type = '', status = '', page = 1, limit = 50, search = '') => {
+  console.log(`💰 AdminAPI: Fetching transactions - Type: ${type}, Status: ${status}, Search: ${search}`);
+  const params = new URLSearchParams();
+  if (type) params.append('type', type);
+  if (status) params.append('status', status);
+  if (search) params.append('search', search);
+  if (page) params.append('page', page);
+  if (limit) params.append('limit', limit);
+  return await adminApi.get(`/admin/transactions?${params}`);
+},
   
   getTransactionDetails: async (id) => {
     console.log(`💰 AdminAPI: Fetching transaction ${id} details`);
