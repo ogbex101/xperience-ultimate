@@ -13,6 +13,17 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
   const [debugInfo, setDebugInfo] = useState(null);
   const [forceGeneratingMatches, setForceGeneratingMatches] = useState(false);
   const [manualAdvancing, setManualAdvancing] = useState(false);
+  const [debugLogs, setDebugLogs] = useState([]);
+
+  const addDebugLog = useCallback((message, data = null) => {
+    const log = {
+      timestamp: new Date().toISOString(),
+      message,
+      data
+    };
+    console.log(`🔍 ${message}`, data || '');
+    setDebugLogs(prev => [...prev.slice(-9), log]); // Keep last 10 logs
+  }, []);
 
   // Memoize fetch function to prevent unnecessary re-renders
   const fetchBracket = useCallback(async () => {
@@ -21,13 +32,16 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
       setError('');
       setDebugInfo(null);
       
-      console.log('🔄 Fetching bracket for tournament:', tournamentId);
-      const startTime = Date.now();
+      addDebugLog('Fetching bracket for tournament:', tournamentId);
       
       const response = await tournamentsAPI.getBracket(tournamentId);
       
-      console.log('✅ Bracket fetched in', Date.now() - startTime, 'ms');
-      console.log('📊 Full response:', response);
+      addDebugLog('Bracket fetch response:', {
+        success: response.success,
+        bracketStatus: response.bracket?.status,
+        roundsCount: response.bracket?.rounds?.length,
+        tournamentType: response.bracket?.tournament_type
+      });
       
       if (response.success) {
         const debugData = {
@@ -41,15 +55,31 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
           hasWinner: !!response.bracket?.winner,
           winnerName: response.bracket?.winner?.username,
           isCreator: isCreator,
-          currentUserId: currentUser?.id
+          currentUserId: currentUser?.id,
+          // Detailed round info
+          rounds: response.bracket?.rounds?.map(round => ({
+            number: round.number,
+            name: round.name,
+            matchCount: round.match_count,
+            completedCount: round.completed_count,
+            matches: round.matches?.map(match => ({
+              id: match.id,
+              status: match.status,
+              hasWinner: !!match.winner,
+              winnerId: match.winner?.id,
+              round: match.round,
+              player1Id: match.player1?.id,
+              player2Id: match.player2?.id
+            }))
+          }))
         };
         
-        console.log('📊 Bracket data received:', debugData);
         setDebugInfo(debugData);
         setBracket(response.bracket);
         
         if (response.bracket?.status === 'ongoing' && (!response.bracket?.rounds || response.bracket.rounds.length === 0)) {
           console.error('❌ Tournament is ongoing but has no bracket!');
+          setError('Tournament is ongoing but bracket is empty. Try fixing matches.');
         }
         
         if (response.bracket?.status === 'upcoming' && response.bracket?.should_generate_bracket) {
@@ -65,7 +95,7 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
     } finally {
       setLoading(false);
     }
-  }, [tournamentId, isCreator, currentUser]);
+  }, [tournamentId, isCreator, currentUser, addDebugLog]);
 
   // Initial fetch
   useEffect(() => {
@@ -131,12 +161,14 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
       return;
     }
     
-    console.log('🔧 Manual advance clicked:', {
+    addDebugLog('Manual advance clicked:', {
       matchId: match.id,
       winnerId: match.winner.id,
       winnerName: match.winner.username,
       isCreator: isCreator,
-      tournamentId: tournamentId
+      tournamentId: tournamentId,
+      matchRound: match.round,
+      bracketStatus: bracket?.status
     });
     
     if (!confirm(`Manually advance winner ${match.winner.username} to next round?`)) {
@@ -147,6 +179,8 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
       setManualAdvancing(true);
       
       const result = await tournamentsAPI.manualAdvance(tournamentId, match.id, match.winner.id);
+      
+      addDebugLog('Manual advance API response:', result);
       
       if (result.success) {
         alert('✅ Winner advanced to next round!');
@@ -304,18 +338,66 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
         </div>
       )}
 
-      {/* Debug info */}
-      {debugInfo && process.env.NODE_ENV === 'development' && (
-        <div className="mb-4 p-3 bg-gray-800/50 rounded-lg text-xs">
-          <div className="text-yellow-400 mb-1">Debug Info:</div>
-          <div className="grid grid-cols-2 gap-1">
-            <div>Tournament ID: {debugInfo.tournamentId}</div>
-            <div>Status: {debugInfo.status}</div>
-            <div>Type: {debugInfo.tournamentType}</div>
-            <div>Participants: {debugInfo.participantCount}</div>
-            <div>Is Creator: {debugInfo.isCreator?.toString()}</div>
-            <div>Your User ID: {debugInfo.currentUserId}</div>
-          </div>
+      {/* Debug Panel */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="mb-4">
+          <details className="bg-gray-800/50 rounded-lg overflow-hidden">
+            <summary className="p-3 bg-gray-800 cursor-pointer flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Bug className="w-4 h-4 text-yellow-400" />
+                <span className="text-yellow-400 font-medium">Debug Panel</span>
+              </div>
+              <ChevronRight className="w-4 h-4 transition-transform group-open:rotate-90" />
+            </summary>
+            <div className="p-3 border-t border-gray-700 max-h-60 overflow-y-auto">
+              {/* Debug Info */}
+              {debugInfo && (
+                <div className="mb-3">
+                  <div className="text-yellow-400 mb-2 text-sm font-medium">Tournament Info:</div>
+                  <div className="grid grid-cols-2 gap-1 text-xs">
+                    <div>Tournament ID: {debugInfo.tournamentId}</div>
+                    <div>Status: {debugInfo.status}</div>
+                    <div>Type: {debugInfo.tournamentType}</div>
+                    <div>Participants: {debugInfo.participantCount}</div>
+                    <div>Is Creator: {debugInfo.isCreator?.toString()}</div>
+                    <div>Your User ID: {debugInfo.currentUserId}</div>
+                    <div>Total Matches: {debugInfo.totalMatches}</div>
+                    <div>Rounds: {debugInfo.roundsCount}</div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Round Debug */}
+              {debugInfo?.rounds && debugInfo.rounds.map(round => (
+                <div key={round.number} className="mb-2">
+                  <div className="text-blue-400 text-xs font-medium">{round.name}: {round.completedCount}/{round.matchCount} completed</div>
+                  {round.matches?.map(match => (
+                    <div key={match.id} className="ml-2 text-xs text-gray-300">
+                      Match {match.id}: Status={match.status}, Winner={match.winnerId ? 'Yes' : 'No'}, Round={match.round}
+                    </div>
+                  ))}
+                </div>
+              ))}
+              
+              {/* Recent Logs */}
+              <div className="mt-3">
+                <div className="text-green-400 mb-2 text-sm font-medium">Recent Logs:</div>
+                <div className="space-y-1">
+                  {debugLogs.slice().reverse().map((log, idx) => (
+                    <div key={idx} className="text-xs font-mono bg-gray-900/50 p-1 rounded">
+                      <span className="text-gray-500">{log.timestamp.split('T')[1].split('.')[0]}</span>
+                      <span className="ml-2 text-gray-300">{log.message}</span>
+                      {log.data && (
+                        <div className="ml-4 text-gray-400">
+                          {JSON.stringify(log.data)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       )}
 
@@ -387,108 +469,120 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
                   </div>
                   
                   <div className="space-y-4">
-                    {round.matches.map((match) => (
-                      <div
-                        key={match.id}
-                        className={`w-64 p-4 rounded-lg border ${getMatchStatusColor(match.status)} cursor-pointer hover:border-purple-500/50 transition-colors`}
-                        onClick={() => handleMatchClick(match)}
-                      >
-                        {/* DEBUG INFO */}
-                        <div className="text-xs bg-blue-900/20 p-1 mb-1 rounded text-blue-300">
-                          Match {match.id}: {match.status}
-                        </div>
-                        
-                        <div className="flex justify-between items-center mb-2">
-                          <span className="text-xs text-gray-400">
-                            Match {match.id}
-                          </span>
-                          <span className={`text-xs px-2 py-1 rounded-full ${
-                            match.status === 'completed' 
-                              ? 'bg-green-500/20 text-green-400'
-                              : match.status === 'ongoing'
-                              ? 'bg-yellow-500/20 text-yellow-400'
-                              : 'bg-gray-700 text-gray-400'
-                          }`}>
-                            {match.status}
-                          </span>
-                        </div>
-                        
-                        <div className="space-y-3">
-                          {/* Player 1 */}
-                          <div className={`p-2 rounded ${
-                            match.winner?.id === match.player1?.id 
-                              ? 'bg-green-500/10 border border-green-500/20'
-                              : 'bg-gray-800'
-                          }`}>
-                            {getPlayerDisplay(match.player1)}
+                    {round.matches.map((match) => {
+                      // Log match details for debugging
+                      if (process.env.NODE_ENV === 'development') {
+                        console.log(`🎯 Match ${match.id}:`, {
+                          status: match.status,
+                          hasWinner: !!match.winner,
+                          winnerId: match.winner?.id,
+                          round: match.round,
+                          player1Id: match.player1?.id,
+                          player2Id: match.player2?.id,
+                          bracketStatus: bracket?.status,
+                          isCreator: isCreator,
+                          showAdvanceButton: match.status === 'completed' && bracket?.status === 'ongoing' && isCreator && !!match.winner
+                        });
+                      }
+                      
+                      return (
+                        <div
+                          key={match.id}
+                          className={`w-64 p-4 rounded-lg border ${getMatchStatusColor(match.status)} cursor-pointer hover:border-purple-500/50 transition-colors`}
+                          onClick={() => handleMatchClick(match)}
+                        >
+                          <div className="flex justify-between items-center mb-2">
+                            <span className="text-xs text-gray-400">
+                              Match {match.id} • Round {match.round}
+                            </span>
+                            <span className={`text-xs px-2 py-1 rounded-full ${
+                              match.status === 'completed' 
+                                ? 'bg-green-500/20 text-green-400'
+                                : match.status === 'ongoing'
+                                ? 'bg-yellow-500/20 text-yellow-400'
+                                : 'bg-gray-700 text-gray-400'
+                            }`}>
+                              {match.status}
+                            </span>
                           </div>
                           
-                          {/* VS */}
-                          <div className="flex items-center justify-center text-gray-500 text-xs">
-                            <Swords className="w-3 h-3 mx-2" />
-                            <span>VS</span>
-                            <Swords className="w-3 h-3 mx-2" />
-                          </div>
-                          
-                          {/* Player 2 */}
-                          <div className={`p-2 rounded ${
-                            match.winner?.id === match.player2?.id 
-                              ? 'bg-green-500/10 border border-green-500/20'
-                              : 'bg-gray-800'
-                          }`}>
-                            {getPlayerDisplay(match.player2)}
-                          </div>
-                        </div>
-                        
-                        {/* WINNER DISPLAY WITH ADVANCE BUTTON */}
-                        {match.winner && (
-                          <div className="mt-3 pt-3 border-t border-gray-700">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center space-x-2 text-sm">
-                                <Award className="w-3 h-3 text-yellow-400" />
-                                <span className="text-gray-300">Winner:</span>
-                                <span className="text-green-400 font-medium" title={match.winner.username}>
-                                  {match.winner.username}
-                                </span>
-                                <span className="text-xs text-gray-500">(ID: {match.winner.id})</span>
-                              </div>
-                              
-                              {/* ADVANCE BUTTON - Always show for completed matches in ongoing tournaments */}
-                              {match.status === 'completed' && bracket?.status === 'ongoing' && isCreator && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleManualAdvance(match);
-                                  }}
-                                  disabled={manualAdvancing}
-                                  className="ml-2 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded text-white disabled:opacity-50 flex items-center space-x-1"
-                                  title="Manually advance winner to next round"
-                                >
-                                  {manualAdvancing ? (
-                                    <>
-                                      <Loader className="w-3 h-3 animate-spin" />
-                                      <span>Advancing...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span>Advance</span>
-                                      <ChevronRight className="w-3 h-3" />
-                                    </>
-                                  )}
-                                </button>
-                              )}
+                          <div className="space-y-3">
+                            {/* Player 1 */}
+                            <div className={`p-2 rounded ${
+                              match.winner?.id === match.player1?.id 
+                                ? 'bg-green-500/10 border border-green-500/20'
+                                : 'bg-gray-800'
+                            }`}>
+                              {getPlayerDisplay(match.player1)}
                             </div>
                             
-                            {/* DEBUG: Show why button might not be showing */}
-                            {match.status === 'completed' && bracket?.status === 'ongoing' && !isCreator && (
-                              <div className="text-xs text-gray-500 mt-1">
-                                (Only tournament creator can advance winners)
-                              </div>
-                            )}
+                            {/* VS */}
+                            <div className="flex items-center justify-center text-gray-500 text-xs">
+                              <Swords className="w-3 h-3 mx-2" />
+                              <span>VS</span>
+                              <Swords className="w-3 h-3 mx-2" />
+                            </div>
+                            
+                            {/* Player 2 */}
+                            <div className={`p-2 rounded ${
+                              match.winner?.id === match.player2?.id 
+                                ? 'bg-green-500/10 border border-green-500/20'
+                                : 'bg-gray-800'
+                            }`}>
+                              {getPlayerDisplay(match.player2)}
+                            </div>
                           </div>
-                        )}
-                      </div>
-                    ))}
+                          
+                          {/* WINNER DISPLAY WITH ADVANCE BUTTON */}
+                          {match.winner && (
+                            <div className="mt-3 pt-3 border-t border-gray-700">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-2 text-sm">
+                                  <Award className="w-3 h-3 text-yellow-400" />
+                                  <span className="text-gray-300">Winner:</span>
+                                  <span className="text-green-400 font-medium" title={match.winner.username}>
+                                    {match.winner.username}
+                                  </span>
+                                  <span className="text-xs text-gray-500">(ID: {match.winner.id})</span>
+                                </div>
+                                
+                                {/* ADVANCE BUTTON - Fixed condition */}
+                                {match.status === 'completed' && bracket?.status === 'ongoing' && isCreator && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleManualAdvance(match);
+                                    }}
+                                    disabled={manualAdvancing}
+                                    className="ml-2 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded text-white disabled:opacity-50 flex items-center space-x-1"
+                                    title="Manually advance winner to next round"
+                                  >
+                                    {manualAdvancing ? (
+                                      <>
+                                        <Loader className="w-3 h-3 animate-spin" />
+                                        <span>Advancing...</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span>Advance</span>
+                                        <ChevronRight className="w-3 h-3" />
+                                      </>
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                              
+                              {/* DEBUG: Show why button might not be showing */}
+                              {match.status === 'completed' && bracket?.status === 'ongoing' && !isCreator && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  (Only tournament creator can advance winners)
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
@@ -502,7 +596,7 @@ const TournamentBracket = ({ tournamentId, tournamentType, isCreator, currentUse
                 <Trophy className="w-6 h-6 text-yellow-400" />
                 <div className="text-center">
                   <p className="text-gray-300 text-sm">Tournament Winner</p>
-                  <p className="text-white font-bold text-lg">{bracket.winner_username || 'Unknown'}</p>
+                  <p className="text-white font-bold text-lg">{bracket.winner.username || 'Unknown'}</p>
                 </div>
               </div>
             </div>

@@ -583,6 +583,24 @@ const tournamentsAPI = {
       };
     }
   },
+  getBracket: async (tournamentId) => {
+    return await api.get(`/tournaments/${tournamentId}/bracket`);
+  },
+  
+  manualAdvance: async (tournamentId, matchId, winnerId) => {
+    return await api.post(`/tournaments/${tournamentId}/manual-advance`, {
+      match_id: matchId,
+      winner_id: winnerId
+    });
+  },
+  
+  fixMatches: async (tournamentId) => {
+    return await api.post(`/tournaments/${tournamentId}/fix-matches`);
+  },
+  
+  start: async (tournamentId) => {
+    return await api.post(`/tournaments/${tournamentId}/start`);
+  },
   
   getUserXP: async () => {
     try {
