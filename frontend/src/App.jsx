@@ -279,8 +279,8 @@ function App() {
                   <Route path="withdrawals" element={<WithdrawalQueue />} />
                   <Route path="withdrawals/:id" element={<WithdrawalDetails />} />
 				          <Route path="transactions" element={<TransactionsManagement />} />
-				          <Route path="matches-management" element={<MatchesManagement />} />
-				          <Route path="tournaments-management" element={<TournamentsManagement />} />
+				         <Route path="matches" element={<MatchesManagement />} />
+				          <Route path="tournaments" element={<TournamentsManagement />} />
 				          <Route path="system-settings" element={<SystemSettings />} />
 				          <Route path="fraud" element={<FraudDetection />} />
 				          <Route path="groups-management" element={<GroupsManagement />} />

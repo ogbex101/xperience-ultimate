@@ -1555,4 +1555,372 @@ router.post('/transactions/:id/refund', authenticateAdmin, async (req, res) => {
     });
   }
 });
+// ==================== MATCHES MANAGEMENT ====================
+router.get('/matches', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      status, 
+      game_type, 
+      page = 1, 
+      limit = 20,
+      search 
+    } = req.query;
+    
+    const offset = (page - 1) * limit;
+    
+    console.log('🎮 Admin: Fetching matches - Status:', status, 'Game Type:', game_type, 'Page:', page);
+
+    let query = `
+      SELECT m.*, 
+             p1.username as player1_username,
+             p2.username as player2_username,
+             w.username as winner_username
+      FROM matches m
+      LEFT JOIN users p1 ON m.player1_id = p1.id
+      LEFT JOIN users p2 ON m.player2_id = p2.id
+      LEFT JOIN users w ON m.winner_id = w.id
+      WHERE 1=1
+    `;
+    
+    let countQuery = `
+      SELECT COUNT(*) as total 
+      FROM matches m
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    const countParams = [];
+
+    // Apply filters
+    if (status && status !== '') {
+      query += ' AND m.status = ?';
+      countQuery += ' AND m.status = ?';
+      params.push(status);
+      countParams.push(status);
+    }
+    
+    if (game_type && game_type !== '') {
+      query += ' AND m.game_type = ?';
+      countQuery += ' AND m.game_type = ?';
+      params.push(game_type);
+      countParams.push(game_type);
+    }
+    
+    // Apply search
+    if (search) {
+      const searchTerm = `%${search}%`;
+      query += ' AND (m.id LIKE ? OR m.game LIKE ? OR p1.username LIKE ? OR p2.username LIKE ?)';
+      countQuery += ' AND (m.id LIKE ? OR m.game LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+      countParams.push(searchTerm, searchTerm);
+    }
+    
+    // Order and pagination
+    query += ' ORDER BY m.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    // Execute queries
+    const [matches] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    // Log activity
+    try {
+      await db.execute(
+        `INSERT INTO admin_activity_logs 
+         (admin_id, action_type, description) 
+         VALUES (?, 'view', 'Viewed matches list')`,
+        [req.admin.id]
+      );
+    } catch (logError) {
+      console.warn('⚠️ Could not log activity:', logError.message);
+    }
+
+    console.log('✅ Found', matches.length, 'matches');
+
+    res.json({
+      success: true,
+      matches,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get matches error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch matches',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.get('/matches/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching match statistics');
+    
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+        SUM(CASE WHEN status = 'ongoing' THEN 1 ELSE 0 END) as ongoing,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+        SUM(stake_amount) as totalStake
+      FROM matches
+    `);
+
+    console.log('✅ Match stats fetched:', stats[0]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total: 0,
+        pending: 0,
+        ongoing: 0,
+        completed: 0,
+        totalStake: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get match stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch match statistics'
+    });
+  }
+});
+
+router.get('/matches/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🔍 Admin: Fetching match details for ID:', id);
+
+    const [matches] = await db.execute(`
+      SELECT m.*, 
+             p1.username as player1_username,
+             p1.email as player1_email,
+             p2.username as player2_username,
+             p2.email as player2_email,
+             w.username as winner_username
+      FROM matches m
+      LEFT JOIN users p1 ON m.player1_id = p1.id
+      LEFT JOIN users p2 ON m.player2_id = p2.id
+      LEFT JOIN users w ON m.winner_id = w.id
+      WHERE m.id = ?
+    `, [id]);
+
+    if (matches.length === 0) {
+      console.log('❌ Match not found:', id);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Match not found' 
+      });
+    }
+
+    const match = matches[0];
+
+    // Get disputes if any
+    const [disputes] = await db.execute(
+      'SELECT * FROM match_disputes WHERE match_id = ? ORDER BY created_at DESC',
+      [id]
+    );
+
+    console.log('✅ Match details fetched:', match.id);
+
+    res.json({
+      success: true,
+      match: match,
+      disputes: disputes
+    });
+
+  } catch (error) {
+    console.error('❌ Get match details error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch match details' 
+    });
+  }
+});
+
+router.post('/matches/:id/resolve', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { winnerId, adminNotes } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('⚡ Admin: Resolving match dispute:', { 
+      matchId: id, 
+      winnerId,
+      adminId 
+    });
+
+    if (!winnerId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Winner ID is required' 
+      });
+    }
+
+    // Get current match
+    const [matches] = await db.execute(
+      'SELECT * FROM matches WHERE id = ? AND status = "ongoing"',
+      [id]
+    );
+
+    if (matches.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Match not found or not in ongoing status' 
+      });
+    }
+
+    const match = matches[0];
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // Update match
+        await connection.execute(
+          'UPDATE matches SET status = "completed", winner_id = ?, completed_at = NOW() WHERE id = ?',
+          [winnerId, id]
+        );
+
+        // Distribute prize if any
+        const prizeAmount = match.prize_pool_amount || match.custom_prize_pool || 0;
+        if (prizeAmount > 0) {
+          await connection.execute(
+            'UPDATE users SET balance = balance + ? WHERE id = ?',
+            [prizeAmount, winnerId]
+          );
+          
+          // Create transaction for prize
+          const transactionId = require('uuid').v4();
+          await connection.execute(
+            `INSERT INTO transactions 
+             (id, user_id, type, amount, status, description) 
+             VALUES (?, ?, ?, ?, 'completed', ?)`,
+            [transactionId, winnerId, 'match_prize', prizeAmount, `Prize for winning match #${id}`]
+          );
+        }
+
+        // Log admin activity
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, affected_user_id, details) 
+           VALUES (?, 'match_resolution', ?, ?, ?)`,
+          [adminId, 
+           `Resolved match #${id} - Winner: ${winnerId}`,
+           winnerId, 
+           JSON.stringify({ adminNotes, prizeAmount })]
+        );
+
+        console.log('✅ Match resolved successfully');
+      } catch (error) {
+        console.error('❌ Error within match resolution transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Match resolved successfully',
+      winner_id: winnerId
+    });
+
+  } catch (error) {
+    console.error('❌ Resolve match error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to resolve match',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+router.post('/matches/:id/cancel', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('🗑️ Admin: Cancelling match:', { 
+      matchId: id, 
+      reason,
+      adminId 
+    });
+
+    // Get current match
+    const [matches] = await db.execute(
+      'SELECT * FROM matches WHERE id = ? AND status IN ("pending", "ongoing")',
+      [id]
+    );
+
+    if (matches.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Match not found or cannot be cancelled' 
+      });
+    }
+
+    const match = matches[0];
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // Update match status
+        await connection.execute(
+          'UPDATE matches SET status = "completed", completed_at = NOW() WHERE id = ?',
+          [id]
+        );
+
+        // Refund stake amount to players
+        if (match.stake_amount > 0) {
+          // Refund to player 1
+          await connection.execute(
+            'UPDATE users SET balance = balance + ? WHERE id = ?',
+            [match.stake_amount, match.player1_id]
+          );
+          
+          if (match.player2_id) {
+            // Refund to player 2 if exists
+            await connection.execute(
+              'UPDATE users SET balance = balance + ? WHERE id = ?',
+              [match.stake_amount, match.player2_id]
+            );
+          }
+        }
+
+        // Log admin activity
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, details) 
+           VALUES (?, 'match_cancellation', ?, ?)`,
+          [adminId, 
+           `Cancelled match #${id}`,
+           JSON.stringify({ reason, stake_amount: match.stake_amount })]
+        );
+
+        console.log('✅ Match cancelled successfully');
+      } catch (error) {
+        console.error('❌ Error within match cancellation transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Match cancelled successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Cancel match error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to cancel match',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
 module.exports = router;
