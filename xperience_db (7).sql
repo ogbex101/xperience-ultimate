@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Jan 12, 2026 at 09:12 AM
+-- Generation Time: Jan 13, 2026 at 10:31 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -61,6 +61,7 @@ CREATE TABLE `admin_activity_logs` (
   `admin_id` int(11) NOT NULL,
   `action_type` varchar(50) NOT NULL,
   `description` text NOT NULL,
+  `details` text DEFAULT NULL,
   `ip_address` varchar(45) DEFAULT NULL,
   `user_agent` text DEFAULT NULL,
   `affected_user_id` int(11) DEFAULT NULL,

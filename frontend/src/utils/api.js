@@ -1112,7 +1112,6 @@ const walletAPI = {
   }
 };
 
-// ==================== ADMIN API (Uses separate adminApi instance) ====================
 const adminAPI = {
   // Test admin connection
   testConnection: async () => {
@@ -1198,16 +1197,17 @@ const adminAPI = {
     console.log(`👥 AdminAPI: Fetching stats for user ${id}`);
     return await adminApi.get(`/admin/users/${id}/stats`);
   },
-getTransactions: async (type = '', status = '', page = 1, limit = 50, search = '') => {
-  console.log(`💰 AdminAPI: Fetching transactions - Type: ${type}, Status: ${status}, Search: ${search}`);
-  const params = new URLSearchParams();
-  if (type) params.append('type', type);
-  if (status) params.append('status', status);
-  if (search) params.append('search', search);
-  if (page) params.append('page', page);
-  if (limit) params.append('limit', limit);
-  return await adminApi.get(`/admin/transactions?${params}`);
-},
+  
+  getTransactions: async (type = '', status = '', page = 1, limit = 50, search = '') => {
+    console.log(`💰 AdminAPI: Fetching transactions - Type: ${type}, Status: ${status}, Search: ${search}`);
+    const params = new URLSearchParams();
+    if (type) params.append('type', type);
+    if (status) params.append('status', status);
+    if (search) params.append('search', search);
+    if (page) params.append('page', page);
+    if (limit) params.append('limit', limit);
+    return await adminApi.get(`/admin/transactions?${params}`);
+  },
   
   getTransactionDetails: async (id) => {
     console.log(`💰 AdminAPI: Fetching transaction ${id} details`);
@@ -1230,12 +1230,15 @@ getTransactions: async (type = '', status = '', page = 1, limit = 50, search = '
   },
   
   // Matches Management
-  getMatches: async (status = '', page = 1, limit = 20) => {
-    console.log(`🎮 AdminAPI: Fetching matches`);
+  getMatches: async (status = '', game_type = '', admin_monitoring = '', page = 1, limit = 20, search = '') => {
+    console.log(`🎮 AdminAPI: Fetching matches - Status: ${status}, Game Type: ${game_type}, Admin Monitoring: ${admin_monitoring}, Page: ${page}`);
     const params = new URLSearchParams();
     if (status) params.append('status', status);
+    if (game_type) params.append('game_type', game_type);
+    if (admin_monitoring) params.append('admin_monitoring', admin_monitoring);
     if (page) params.append('page', page);
     if (limit) params.append('limit', limit);
+    if (search) params.append('search', search);
     return await adminApi.get(`/admin/matches?${params}`);
   },
   
@@ -1264,14 +1267,22 @@ getTransactions: async (type = '', status = '', page = 1, limit = 50, search = '
     return await adminApi.get(`/admin/matches/stats`);
   },
   
-  // Tournaments Management
-  getTournaments: async (status = '', page = 1, limit = 20) => {
-    console.log(`🏆 AdminAPI: Fetching tournaments`);
-    const params = new URLSearchParams();
-    if (status) params.append('status', status);
-    if (page) params.append('page', page);
-    if (limit) params.append('limit', limit);
-    return await adminApi.get(`/admin/tournaments?${params}`);
+  getTournaments: async (status = '', type = '', page = 1, limit = 20, search = '', monitoring = '', sort = 'newest') => {
+  console.log(`🏆 AdminAPI: Fetching tournaments - Status: ${status}, Type: ${type}, Monitoring: ${monitoring}, Sort: ${sort}`);
+  const params = new URLSearchParams();
+  if (status) params.append('status', status);
+  if (type) params.append('type', type);
+  if (monitoring) params.append('monitoring', monitoring);
+  if (sort) params.append('sort', sort);
+  if (search) params.append('search', search);
+  if (page) params.append('page', page);
+  if (limit) params.append('limit', limit);
+  return await adminApi.get(`/admin/tournaments?${params}`);
+},
+  
+  getTournamentStats: async () => {
+    console.log(`🏆 AdminAPI: Fetching tournament stats`);
+    return await adminApi.get(`/admin/tournaments/stats`);
   },
   
   getTournamentDetails: async (id) => {
@@ -1302,6 +1313,27 @@ getTransactions: async (type = '', status = '', page = 1, limit = 50, search = '
   removeTournamentParticipant: async (tournamentId, userId, reason = '') => {
     console.log(`🏆 AdminAPI: Removing participant ${userId} from tournament ${tournamentId}`);
     return await adminApi.delete(`/admin/tournaments/${tournamentId}/participants/${userId}`, { data: { reason } });
+  },
+  
+  getTournamentMatches: async (id) => {
+    console.log(`🏆 AdminAPI: Fetching matches for tournament ${id}`);
+    return await adminApi.get(`/admin/tournaments/${id}/matches`);
+  },
+  
+  // Admin monitoring endpoints - FIXED: All using adminApi
+  getMonitoredTournaments: async () => {
+    console.log(`🛡️ AdminAPI: Fetching monitored tournaments`);
+    return await adminApi.get(`/admin/monitored-tournaments`);
+  },
+  
+  getMonitoringLogs: async (tournamentId) => {
+    console.log(`📝 AdminAPI: Fetching monitoring logs for tournament ${tournamentId}`);
+    return await adminApi.get(`/admin/tournaments/${tournamentId}/monitoring-logs`);
+  },
+  
+  getMonitoringStats: async (tournamentId) => {
+    console.log(`📊 AdminAPI: Fetching monitoring stats for tournament ${tournamentId}`);
+    return await adminApi.get(`/admin/tournaments/${tournamentId}/monitoring-stats`);
   },
   
   // Groups Management

@@ -287,21 +287,38 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
   try {
     console.log('📊 Fetching dashboard stats for admin:', req.admin.username);
     
+    // Get tournament stats
+    const [tournamentStats] = await db.execute(`SELECT 
+      COUNT(*) as totalTournaments,
+      SUM(CASE WHEN status = 'upcoming' THEN 1 ELSE 0 END) as upcomingTournaments,
+      SUM(CASE WHEN status = 'ongoing' THEN 1 ELSE 0 END) as ongoingTournaments,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completedTournaments,
+      SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelledTournaments,
+      COALESCE(SUM(prize_pool + custom_prize_pool), 0) as totalPrizePool,
+      SUM(CASE WHEN admin_monitoring = 1 THEN 1 ELSE 0 END) as monitored_tournaments
+    FROM tournaments`);
+
+    // Get other stats
     const [stats] = await db.execute(`SELECT 
       (SELECT COUNT(*) FROM users) as total_users,
-      (SELECT SUM(balance) FROM users) as total_balance,
-      (SELECT SUM(xp_points) FROM users) as total_xp,
+      COALESCE((SELECT SUM(balance) FROM users), 0) as total_balance,
+      COALESCE((SELECT SUM(xp_points) FROM users), 0) as total_xp,
       (SELECT COUNT(*) FROM withdrawal_requests WHERE status = 'pending') as pending_withdrawals,
       (SELECT COUNT(*) FROM transactions WHERE DATE(created_at) = CURDATE()) as today_transactions,
-      (SELECT SUM(amount) FROM transactions WHERE DATE(created_at) = CURDATE() AND type = 'deposit') as today_deposits,
+      COALESCE((SELECT SUM(amount) FROM transactions WHERE DATE(created_at) = CURDATE() AND type = 'deposit'), 0) as today_deposits,
       (SELECT COUNT(*) FROM fraud_flags WHERE status = 'active') as active_fraud_flags,
       (SELECT COUNT(*) FROM matches WHERE status = 'ongoing') as ongoing_matches,
-      (SELECT COUNT(*) FROM tournaments WHERE status = 'ongoing') as ongoing_tournaments,
       (SELECT COUNT(*) FROM groups WHERE DATE(created_at) = CURDATE()) as today_groups,
       (SELECT COUNT(*) FROM groups) as total_groups
     `);
 
-    // Recent withdrawals (already have)
+    // Combine stats
+    const combinedStats = {
+      ...stats[0],
+      ...tournamentStats[0]
+    };
+
+    // Get other data...
     const [recentWithdrawals] = await db.execute(`SELECT 
       wr.*, u.username, u.email 
       FROM withdrawal_requests wr
@@ -310,14 +327,12 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       ORDER BY wr.created_at DESC
       LIMIT 10`);
 
-    // Recent users (already have)
     const [recentUsers] = await db.execute(`SELECT 
       id, username, email, balance, xp_points, created_at 
       FROM users 
       ORDER BY created_at DESC 
       LIMIT 5`);
 
-    // Ongoing matches
     const [ongoingMatches] = await db.execute(`SELECT 
       m.*, 
       p1.username as player1_username,
@@ -331,7 +346,6 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       ORDER BY m.created_at DESC
       LIMIT 5`);
 
-    // Ongoing tournaments
     const [ongoingTournaments] = await db.execute(`SELECT 
       t.*, 
       c.username as creator_username,
@@ -343,7 +357,6 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       ORDER BY t.start_date ASC
       LIMIT 5`);
 
-    // Recent groups
     const [recentGroups] = await db.execute(`SELECT 
       g.*, 
       u.username as creator_username,
@@ -355,7 +368,7 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      stats: stats[0],
+      stats: combinedStats,
       recent_withdrawals: recentWithdrawals,
       recent_users: recentUsers,
       ongoing_matches: ongoingMatches,
@@ -1668,7 +1681,15 @@ router.get('/matches/stats', authenticateAdmin, async (req, res) => {
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
         SUM(CASE WHEN status = 'ongoing' THEN 1 ELSE 0 END) as ongoing,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-        SUM(stake_amount) as totalStake
+        COALESCE(SUM(stake_amount), 0) as totalStake,
+        SUM(CASE WHEN admin_monitoring = 1 THEN 1 ELSE 0 END) as adminMonitored,
+        COALESCE(SUM(
+          CASE 
+            WHEN prize_pool_amount > 0 THEN prize_pool_amount
+            WHEN custom_prize_pool > 0 THEN custom_prize_pool
+            ELSE 0 
+          END
+        ), 0) as totalPrize
       FROM matches
     `);
 
@@ -1681,7 +1702,9 @@ router.get('/matches/stats', authenticateAdmin, async (req, res) => {
         pending: 0,
         ongoing: 0,
         completed: 0,
-        totalStake: 0
+        totalStake: 0,
+        adminMonitored: 0,
+        totalPrize: 0
       }
     });
 
@@ -1693,7 +1716,6 @@ router.get('/matches/stats', authenticateAdmin, async (req, res) => {
     });
   }
 });
-
 router.get('/matches/:id', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1745,101 +1767,6 @@ router.get('/matches/:id', authenticateAdmin, async (req, res) => {
     });
   }
 });
-
-router.post('/matches/:id/resolve', authenticateAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { winnerId, adminNotes } = req.body;
-    const adminId = req.admin.id;
-
-    console.log('⚡ Admin: Resolving match dispute:', { 
-      matchId: id, 
-      winnerId,
-      adminId 
-    });
-
-    if (!winnerId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Winner ID is required' 
-      });
-    }
-
-    // Get current match
-    const [matches] = await db.execute(
-      'SELECT * FROM matches WHERE id = ? AND status = "ongoing"',
-      [id]
-    );
-
-    if (matches.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Match not found or not in ongoing status' 
-      });
-    }
-
-    const match = matches[0];
-
-    await db.withTransaction(async (connection) => {
-      try {
-        // Update match
-        await connection.execute(
-          'UPDATE matches SET status = "completed", winner_id = ?, completed_at = NOW() WHERE id = ?',
-          [winnerId, id]
-        );
-
-        // Distribute prize if any
-        const prizeAmount = match.prize_pool_amount || match.custom_prize_pool || 0;
-        if (prizeAmount > 0) {
-          await connection.execute(
-            'UPDATE users SET balance = balance + ? WHERE id = ?',
-            [prizeAmount, winnerId]
-          );
-          
-          // Create transaction for prize
-          const transactionId = require('uuid').v4();
-          await connection.execute(
-            `INSERT INTO transactions 
-             (id, user_id, type, amount, status, description) 
-             VALUES (?, ?, ?, ?, 'completed', ?)`,
-            [transactionId, winnerId, 'match_prize', prizeAmount, `Prize for winning match #${id}`]
-          );
-        }
-
-        // Log admin activity
-        await connection.execute(
-          `INSERT INTO admin_activity_logs 
-           (admin_id, action_type, description, affected_user_id, details) 
-           VALUES (?, 'match_resolution', ?, ?, ?)`,
-          [adminId, 
-           `Resolved match #${id} - Winner: ${winnerId}`,
-           winnerId, 
-           JSON.stringify({ adminNotes, prizeAmount })]
-        );
-
-        console.log('✅ Match resolved successfully');
-      } catch (error) {
-        console.error('❌ Error within match resolution transaction:', error);
-        throw error;
-      }
-    });
-
-    res.json({
-      success: true,
-      message: 'Match resolved successfully',
-      winner_id: winnerId
-    });
-
-  } catch (error) {
-    console.error('❌ Resolve match error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to resolve match',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
 router.post('/matches/:id/cancel', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1892,6 +1819,28 @@ router.post('/matches/:id/cancel', authenticateAdmin, async (req, res) => {
           }
         }
 
+        // Log admin monitoring activity if admin monitoring was enabled
+        if (match.admin_monitoring === 1) {
+          await connection.execute(
+            `INSERT INTO admin_monitoring_logs 
+             (tournament_id, match_id, admin_id, action_type, details, ip_address) 
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              null, // tournament_id (null for regular matches)
+              id,
+              adminId,
+              'overrode_result',
+              JSON.stringify({
+                reason: reason,
+                action: 'cancelled_by_admin',
+                stake_amount: match.stake_amount,
+                refunded_to_players: [match.player1_id, match.player2_id].filter(Boolean)
+              }),
+              req.ip || 'unknown'
+            ]
+          );
+        }
+
         // Log admin activity
         await connection.execute(
           `INSERT INTO admin_activity_logs 
@@ -1899,7 +1848,12 @@ router.post('/matches/:id/cancel', authenticateAdmin, async (req, res) => {
            VALUES (?, 'match_cancellation', ?, ?)`,
           [adminId, 
            `Cancelled match #${id}`,
-           JSON.stringify({ reason, stake_amount: match.stake_amount })]
+           JSON.stringify({ 
+             reason, 
+             stake_amount: match.stake_amount,
+             admin_monitoring: match.admin_monitoring,
+             final_decision: true // Referee's word is final
+           })]
         );
 
         console.log('✅ Match cancelled successfully');
@@ -1911,7 +1865,9 @@ router.post('/matches/:id/cancel', authenticateAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Match cancelled successfully'
+      message: 'Match cancelled successfully',
+      admin_monitoring: match.admin_monitoring === 1,
+      final_decision: true // Referee's word is final
     });
 
   } catch (error) {
@@ -1920,6 +1876,1138 @@ router.post('/matches/:id/cancel', authenticateAdmin, async (req, res) => {
       success: false, 
       message: 'Failed to cancel match',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+router.post('/matches/:id/resolve', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { winnerId, adminNotes } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('⚡ Admin: Resolving match dispute:', { 
+      matchId: id, 
+      winnerId,
+      adminId 
+    });
+
+    if (!winnerId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Winner ID is required' 
+      });
+    }
+
+    // Get current match
+    const [matches] = await db.execute(
+      'SELECT * FROM matches WHERE id = ? AND status = "ongoing"',
+      [id]
+    );
+
+    if (matches.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Match not found or not in ongoing status' 
+      });
+    }
+
+    const match = matches[0];
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // Update match
+        await connection.execute(
+          'UPDATE matches SET status = "completed", winner_id = ?, completed_at = NOW() WHERE id = ?',
+          [winnerId, id]
+        );
+
+        // Distribute prize if any
+        const prizeAmount = match.prize_pool_amount || match.custom_prize_pool || 0;
+        if (prizeAmount > 0) {
+          // Update user balance
+          await connection.execute(
+            'UPDATE users SET balance = balance + ? WHERE id = ?',
+            [prizeAmount, winnerId]
+          );
+          
+          // Create transaction record - NO ID COLUMN (auto-increment)
+          const reference = `MATCH_PRIZE_${id}_${Date.now()}`;
+          await connection.execute(
+            `INSERT INTO transactions 
+             (user_id, type, amount, status, description, reference, currency) 
+             VALUES (?, ?, ?, 'completed', ?, ?, ?)`,
+            [
+              winnerId, 
+              'match_prize', 
+              prizeAmount, 
+              `Prize for winning match #${id}`,
+              reference,
+              'NGN'
+            ]
+          );
+          console.log(`✅ Created transaction with reference: ${reference}`);
+        }
+
+        // Log admin monitoring activity if admin monitoring was enabled
+        if (match.admin_monitoring === 1) {
+          await connection.execute(
+            `INSERT INTO admin_monitoring_logs 
+             (tournament_id, match_id, admin_id, action_type, details, ip_address) 
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              null, // tournament_id (null for regular matches)
+              id,
+              adminId,
+              'resolved_dispute',
+              JSON.stringify({
+                winner_id: winnerId,
+                admin_notes: adminNotes,
+                stake_amount: match.stake_amount,
+                prize_amount: prizeAmount
+              }),
+              req.ip || 'unknown'
+            ]
+          );
+          console.log('📝 Admin monitoring log created');
+        }
+
+        // Log admin activity
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, affected_user_id, details) 
+           VALUES (?, 'match_resolution', ?, ?, ?)`,
+          [adminId, 
+           `Resolved match #${id} - Winner: ${winnerId}`,
+           winnerId, 
+           JSON.stringify({ 
+             adminNotes, 
+             prizeAmount,
+             admin_monitoring: match.admin_monitoring,
+             final_decision: true
+           })]
+        );
+
+        console.log('✅ Match resolved successfully');
+      } catch (error) {
+        console.error('❌ Error within match resolution transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Match resolved successfully',
+      winner_id: winnerId,
+      admin_monitoring: match.admin_monitoring === 1,
+      final_decision: true
+    });
+
+  } catch (error) {
+    console.error('❌ Resolve match error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to resolve match',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+// ==================== MATCH AUDIT LOGS ====================
+router.get('/matches/:id/audit-logs', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+    
+    console.log('📝 Admin: Fetching audit logs for match ID:', id);
+
+    // First, verify match exists
+    const [matches] = await db.execute(
+      'SELECT id FROM matches WHERE id = ?',
+      [id]
+    );
+
+    if (matches.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Match not found' 
+      });
+    }
+
+    // Get admin monitoring logs from admin_monitoring_logs table
+    let monitoringLogs = [];
+    try {
+      const [logs] = await db.execute(`
+        SELECT 
+          aml.*,
+          au.username as admin_username,
+          'monitoring' as log_source
+        FROM admin_monitoring_logs aml
+        LEFT JOIN admin_users au ON aml.admin_id = au.id
+        WHERE aml.match_id = ?
+        ORDER BY aml.created_at DESC
+        LIMIT 50
+      `, [id]);
+      monitoringLogs = logs;
+    } catch (error) {
+      console.warn('⚠️ Could not fetch monitoring logs:', error.message);
+    }
+
+    // Get related admin activity logs
+    let activityLogs = [];
+    try {
+      const [logs] = await db.execute(`
+        SELECT 
+          al.*,
+          au.username as admin_username,
+          'activity' as log_source
+        FROM admin_activity_logs al
+        LEFT JOIN admin_users au ON al.admin_id = au.id
+        WHERE al.description LIKE ? OR al.description LIKE ?
+        ORDER BY al.created_at DESC
+        LIMIT 50
+      `, [`%match #${id}%`, `%Match #${id}%`]);
+      activityLogs = logs;
+    } catch (error) {
+      console.warn('⚠️ Could not fetch activity logs:', error.message);
+    }
+
+    // Get match dispute logs if any
+    let disputeLogs = [];
+    try {
+      const [logs] = await db.execute(
+        'SELECT * FROM match_disputes WHERE match_id = ? ORDER BY created_at DESC LIMIT 20',
+        [id]
+      );
+      disputeLogs = logs.map(log => ({
+        ...log,
+        log_source: 'dispute',
+        action_type: 'match_dispute',
+        details: JSON.stringify(log)
+      }));
+    } catch (error) {
+      console.warn('⚠️ Could not fetch dispute logs:', error.message);
+    }
+
+    // Get transaction logs for this match
+    let transactionLogs = [];
+    try {
+      const [logs] = await db.execute(
+        `SELECT 
+          t.*,
+          'transaction' as log_source,
+          'match_transaction' as action_type,
+          CONCAT('Transaction: ', t.description) as details
+        FROM transactions t
+        WHERE t.description LIKE ? OR t.reference LIKE ?
+        ORDER BY t.created_at DESC
+        LIMIT 20`,
+        [`%match #${id}%`, `%MATCH_${id}_%`]
+      );
+      transactionLogs = logs;
+    } catch (error) {
+      console.warn('⚠️ Could not fetch transaction logs:', error.message);
+    }
+
+    // Combine all logs
+    const allLogs = [
+      ...monitoringLogs,
+      ...activityLogs,
+      ...disputeLogs,
+      ...transactionLogs
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    console.log('✅ Found', allLogs.length, 'audit logs for match', id);
+
+    res.json({
+      success: true,
+      logs: allLogs,
+      match_id: id
+    });
+
+  } catch (error) {
+    console.error('❌ Get audit logs error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch audit logs',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+router.get('/matches/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching match statistics');
+    
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+        SUM(CASE WHEN status = 'ongoing' THEN 1 ELSE 0 END) as ongoing,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+        COALESCE(SUM(stake_amount), 0) as totalStake,
+        SUM(CASE WHEN admin_monitoring = 1 THEN 1 ELSE 0 END) as adminMonitored,
+        COALESCE(SUM(
+          CASE 
+            WHEN prize_pool_amount > 0 THEN prize_pool_amount
+            WHEN custom_prize_pool > 0 THEN custom_prize_pool
+            ELSE 0 
+          END
+        ), 0) as totalPrize
+      FROM matches
+    `);
+
+    console.log('✅ Match stats fetched:', stats[0]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total: 0,
+        pending: 0,
+        ongoing: 0,
+        completed: 0,
+        totalStake: 0,
+        adminMonitored: 0,
+        totalPrize: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get match stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch match statistics'
+    });
+  }
+});
+// ==================== TOURNAMENTS MANAGEMENT ====================
+
+// GET /api/admin/tournaments - Get all tournaments with filters
+router.get('/tournaments', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      status, 
+      type, 
+      page = 1, 
+      limit = 20,
+      search 
+    } = req.query;
+    
+    const offset = (page - 1) * limit;
+    
+    console.log('🎯 Admin: Fetching tournaments - Status:', status, 'Type:', type, 'Page:', page);
+
+    let query = `
+      SELECT t.*, 
+             u.username as creator_name,
+             COUNT(DISTINCT tp.id) as current_participants,
+             COUNT(DISTINCT CASE WHEN t.type = 'squad' THEN tp.group_id ELSE NULL END) as current_squads
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      WHERE 1=1
+    `;
+    
+    let countQuery = `
+      SELECT COUNT(*) as total 
+      FROM tournaments t
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    const countParams = [];
+
+    // Apply filters
+    if (status && status !== '') {
+      query += ' AND t.status = ?';
+      countQuery += ' AND t.status = ?';
+      params.push(status);
+      countParams.push(status);
+    }
+    
+    if (type && type !== '') {
+      query += ' AND t.type = ?';
+      countQuery += ' AND t.type = ?';
+      params.push(type);
+      countParams.push(type);
+    }
+    
+    // Apply search
+    if (search) {
+      const searchTerm = `%${search}%`;
+      query += ' AND (t.name LIKE ? OR t.game LIKE ? OR u.username LIKE ?)';
+      countQuery += ' AND (t.name LIKE ? OR t.game LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm);
+      countParams.push(searchTerm, searchTerm);
+    }
+    
+    // Group and pagination
+    query += ' GROUP BY t.id ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    // Execute queries
+    const [tournaments] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    // Log activity
+    try {
+      await db.execute(
+        `INSERT INTO admin_activity_logs 
+         (admin_id, action_type, description) 
+         VALUES (?, 'view', 'Viewed tournaments list')`,
+        [req.admin.id]
+      );
+    } catch (logError) {
+      console.warn('⚠️ Could not log activity:', logError.message);
+    }
+
+    console.log('✅ Found', tournaments.length, 'tournaments');
+
+    res.json({
+      success: true,
+      tournaments: tournaments.map(t => ({
+        ...t,
+        entry_fee: t.xp_entry_fee, // Map for frontend
+        current_participants: t.current_participants || 0,
+        current_squads: t.current_squads || 0
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get tournaments error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch tournaments',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// GET /api/admin/tournaments/stats - Get tournament statistics
+router.get('/tournaments/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching tournament statistics');
+    
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as totalTournaments,
+        SUM(CASE WHEN status = 'upcoming' THEN 1 ELSE 0 END) as upcomingTournaments,
+        SUM(CASE WHEN status = 'ongoing' THEN 1 ELSE 0 END) as ongoingTournaments,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completedTournaments,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelledTournaments,
+        SUM(prize_pool + custom_prize_pool) as totalPrizePool
+      FROM tournaments
+    `);
+
+    console.log('✅ Tournament stats fetched:', stats[0]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        totalTournaments: 0,
+        upcomingTournaments: 0,
+        ongoingTournaments: 0,
+        completedTournaments: 0,
+        cancelledTournaments: 0,
+        totalPrizePool: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get tournament stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch tournament statistics'
+    });
+  }
+});
+
+// GET /api/admin/tournaments - Get all tournaments with filters
+router.get('/tournaments', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      status, 
+      type, 
+      monitoring,
+      sort = 'newest',
+      page = 1, 
+      limit = 20,
+      search 
+    } = req.query;
+    
+    const offset = (page - 1) * limit;
+    
+    console.log('🎯 Admin: Fetching tournaments - Status:', status, 'Type:', type, 'Monitoring:', monitoring, 'Sort:', sort, 'Page:', page);
+
+    let query = `
+      SELECT t.*, 
+             u.username as creator_name,
+             COUNT(DISTINCT tp.id) as current_participants,
+             COUNT(DISTINCT CASE WHEN t.type = 'squad' THEN tp.group_id ELSE NULL END) as current_squads,
+             COUNT(DISTINCT aml.id) as log_count
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      LEFT JOIN admin_monitoring_logs aml ON t.id = aml.tournament_id
+      WHERE 1=1
+    `;
+    
+    let countQuery = `
+      SELECT COUNT(DISTINCT t.id) as total 
+      FROM tournaments t
+      LEFT JOIN users u ON t.creator_id = u.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    const countParams = [];
+
+    // Apply filters
+    if (status && status !== '') {
+      query += ' AND t.status = ?';
+      countQuery += ' AND t.status = ?';
+      params.push(status);
+      countParams.push(status);
+    }
+    
+    if (type && type !== '') {
+      query += ' AND t.type = ?';
+      countQuery += ' AND t.type = ?';
+      params.push(type);
+      countParams.push(type);
+    }
+    
+    // Apply monitoring filter
+    if (monitoring && monitoring !== 'all') {
+      if (monitoring === 'monitored') {
+        query += ' AND t.admin_monitoring = 1';
+        countQuery += ' AND t.admin_monitoring = 1';
+      } else if (monitoring === 'not-monitored') {
+        query += ' AND (t.admin_monitoring = 0 OR t.admin_monitoring IS NULL)';
+        countQuery += ' AND (t.admin_monitoring = 0 OR t.admin_monitoring IS NULL)';
+      }
+    }
+    
+    // Apply search
+    if (search && search.trim() !== '') {
+      const searchTerm = `%${search.trim()}%`;
+      query += ' AND (t.name LIKE ? OR t.game LIKE ? OR u.username LIKE ?)';
+      countQuery += ' AND (t.name LIKE ? OR t.game LIKE ? OR u.username LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm);
+      countParams.push(searchTerm, searchTerm, searchTerm);
+    }
+    
+    // Group
+    query += ' GROUP BY t.id';
+    
+    // Apply sorting
+    switch(sort) {
+      case 'oldest':
+        query += ' ORDER BY t.created_at ASC';
+        break;
+      case 'prize_high':
+        query += ' ORDER BY (t.prize_pool + t.custom_prize_pool) DESC';
+        break;
+      case 'prize_low':
+        query += ' ORDER BY (t.prize_pool + t.custom_prize_pool) ASC';
+        break;
+      case 'participants_high':
+        query += ' ORDER BY current_participants DESC';
+        break;
+      case 'participants_low':
+        query += ' ORDER BY current_participants ASC';
+        break;
+      case 'newest':
+      default:
+        query += ' ORDER BY t.created_at DESC';
+    }
+    
+    // Add pagination
+    query += ' LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    // Execute queries
+    const [tournaments] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    // Log activity
+    try {
+      await db.execute(
+        `INSERT INTO admin_activity_logs 
+         (admin_id, action_type, description) 
+         VALUES (?, 'view', 'Viewed tournaments list')`,
+        [req.admin.id]
+      );
+    } catch (logError) {
+      console.warn('⚠️ Could not log activity:', logError.message);
+    }
+
+    console.log('✅ Found', tournaments.length, 'tournaments');
+
+    res.json({
+      success: true,
+      tournaments: tournaments.map(t => ({
+        ...t,
+        entry_fee: t.xp_entry_fee,
+        current_participants: t.current_participants || 0,
+        current_squads: t.current_squads || 0,
+        log_count: t.log_count || 0
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0]?.total || 0,
+        totalPages: Math.ceil((countResult[0]?.total || 0) / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get tournaments error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch tournaments',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// GET /api/admin/tournaments/:id/participants - Get tournament participants
+router.get('/tournaments/:id/participants', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('👥 Admin: Fetching participants for tournament:', id);
+
+    const [participants] = await db.execute(`
+      SELECT tp.*, 
+             u.username,
+             u.email,
+             u.rank,
+             u.profile_pic,
+             g.name as group_name
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      LEFT JOIN groups g ON tp.group_id = g.id
+      WHERE tp.tournament_id = ? AND tp.status = 'joined'
+      ORDER BY tp.created_at ASC
+    `, [id]);
+
+    console.log('✅ Found', participants.length, 'participants');
+
+    res.json({
+      success: true,
+      participants: participants || [],
+      tournament_id: id
+    });
+
+  } catch (error) {
+    console.error('❌ Get participants error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch participants' 
+    });
+  }
+});
+
+// POST /api/admin/tournaments/:id/cancel - Cancel tournament
+router.post('/tournaments/:id/cancel', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('🚫 Admin: Cancelling tournament:', { 
+      tournamentId: id, 
+      reason,
+      adminId 
+    });
+
+    // Get tournament details
+    const [tournaments] = await db.execute(
+      'SELECT * FROM tournaments WHERE id = ? AND status IN ("upcoming", "ongoing")',
+      [id]
+    );
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Tournament not found or cannot be cancelled' 
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // Update tournament status
+        await connection.query(
+          'UPDATE tournaments SET status = "cancelled", completed_at = NOW() WHERE id = ?',
+          [id]
+        );
+
+        // Refund XP entry fees if any
+        if (tournament.xp_entry_fee > 0) {
+          const [participants] = await connection.query(`
+            SELECT tp.user_id 
+            FROM tournament_participants tp
+            WHERE tp.tournament_id = ? AND tp.status = 'joined'
+          `, [id]);
+
+          for (const participant of participants) {
+            await connection.query(
+              'UPDATE users SET xp_points = xp_points + ? WHERE id = ?',
+              [tournament.xp_entry_fee, participant.user_id]
+            );
+
+            // Record XP refund
+            await connection.query(`
+              INSERT INTO xp_transactions 
+              (user_id, tournament_id, amount, type, description, created_at)
+              VALUES (?, ?, ?, 'refund', ?, NOW())
+            `, [
+              participant.user_id,
+              id,
+              tournament.xp_entry_fee,
+              `XP refund for cancelled tournament: ${tournament.name}`
+            ]);
+          }
+
+          console.log(`✅ Refunded XP to ${participants.length} participants`);
+        }
+
+        // Notify participants
+        const [participants] = await connection.query(`
+          SELECT DISTINCT user_id FROM tournament_participants 
+          WHERE tournament_id = ? AND status = 'joined'
+        `, [id]);
+
+        for (const participant of participants) {
+          await connection.query(`
+            INSERT INTO notifications 
+            (user_id, message, type, status, tournament_id, created_at)
+            VALUES (?, ?, 'system', 'unread', ?, NOW())
+          `, [
+            participant.user_id,
+            `Tournament "${tournament.name}" has been cancelled by admin. ${tournament.xp_entry_fee > 0 ? 'Your entry fee has been refunded.' : ''}`,
+            id
+          ]);
+        }
+
+        // Log admin activity
+        await connection.query(`
+          INSERT INTO admin_activity_logs 
+          (admin_id, action_type, description, details) 
+          VALUES (?, 'tournament_cancellation', ?, ?)
+        `, [
+          adminId,
+          `Cancelled tournament #${id}`,
+          JSON.stringify({
+            reason,
+            tournament_name: tournament.name,
+            entry_fee: tournament.xp_entry_fee,
+            participants_notified: participants.length
+          })
+        ]);
+
+        console.log('✅ Tournament cancelled successfully');
+      } catch (error) {
+        console.error('❌ Error within cancellation transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Tournament cancelled successfully',
+      refunded: tournament.xp_entry_fee > 0
+    });
+
+  } catch (error) {
+    console.error('❌ Cancel tournament error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to cancel tournament',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// POST /api/admin/tournaments/:id/distribute-prizes - Distribute tournament prizes
+router.post('/tournaments/:id/distribute-prizes', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+
+    console.log('💰 Admin: Distributing prizes for tournament:', id);
+
+    // Get tournament details
+    const [tournaments] = await db.execute(
+      'SELECT * FROM tournaments WHERE id = ? AND status = "completed"',
+      [id]
+    );
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Tournament not found or not completed' 
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    if (!tournament.winner_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Tournament has no winner set' 
+      });
+    }
+
+    // Check if prizes already distributed
+    const [existingPrizes] = await db.execute(`
+      SELECT 1 FROM xp_transactions 
+      WHERE tournament_id = ? AND type = 'earned' AND description LIKE '%prize%'
+      LIMIT 1
+    `, [id]);
+
+    if (existingPrizes.length > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Prizes already distributed for this tournament' 
+      });
+    }
+
+    await db.withTransaction(async (connection) => {
+      try {
+        const totalPrize = tournament.prize_pool || tournament.custom_prize_pool || 0;
+        
+        if (totalPrize > 0) {
+          // Award XP to winner
+          await connection.query(
+            'UPDATE users SET xp_points = xp_points + ? WHERE id = ?',
+            [totalPrize, tournament.winner_id]
+          );
+
+          // Record XP prize transaction
+          await connection.query(`
+            INSERT INTO xp_transactions 
+            (user_id, tournament_id, amount, type, description, created_at)
+            VALUES (?, ?, ?, 'earned', ?, NOW())
+          `, [
+            tournament.winner_id,
+            id,
+            totalPrize,
+            `Tournament prize: ${tournament.name}`
+          ]);
+
+          console.log(`💰 Awarded ${totalPrize} XP to winner ${tournament.winner_id}`);
+        }
+
+        // Log admin activity
+        await connection.query(`
+          INSERT INTO admin_activity_logs 
+          (admin_id, action_type, description, details) 
+          VALUES (?, 'prize_distribution', ?, ?)
+        `, [
+          adminId,
+          `Distributed prizes for tournament #${id}`,
+          JSON.stringify({
+            tournament_name: tournament.name,
+            winner_id: tournament.winner_id,
+            prize_amount: totalPrize,
+            prize_type: tournament.prize_pool_option
+          })
+        ]);
+
+        console.log('✅ Prizes distributed successfully');
+      } catch (error) {
+        console.error('❌ Error within prize distribution transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Prizes distributed successfully',
+      prize_distributed: tournament.prize_pool || tournament.custom_prize_pool || 0,
+      winner_id: tournament.winner_id
+    });
+
+  } catch (error) {
+    console.error('❌ Distribute prizes error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to distribute prizes',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// DELETE /api/admin/tournaments/:id/participants/:userId - Remove participant
+router.delete('/tournaments/:id/participants/:userId', authenticateAdmin, async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const adminId = req.admin.id;
+    const { reason } = req.body;
+
+    console.log('👢 Admin: Removing participant:', { tournamentId: id, userId, adminId });
+
+    // Check if tournament exists
+    const [tournaments] = await db.execute(
+      'SELECT * FROM tournaments WHERE id = ? AND status = "upcoming"',
+      [id]
+    );
+
+    if (tournaments.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Tournament not found or already started' 
+      });
+    }
+
+    const tournament = tournaments[0];
+
+    // Check if participant exists
+    const [participants] = await db.execute(`
+      SELECT tp.*, u.username 
+      FROM tournament_participants tp
+      JOIN users u ON tp.user_id = u.id
+      WHERE tp.tournament_id = ? AND tp.user_id = ? AND tp.status = 'joined'
+    `, [id, userId]);
+
+    if (participants.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Participant not found in tournament' 
+      });
+    }
+
+    const participant = participants[0];
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // Update participant status
+        await connection.query(
+          'UPDATE tournament_participants SET status = "declined" WHERE tournament_id = ? AND user_id = ?',
+          [id, userId]
+        );
+
+        // Refund entry fee if any
+        if (tournament.xp_entry_fee > 0) {
+          await connection.query(
+            'UPDATE users SET xp_points = xp_points + ? WHERE id = ?',
+            [tournament.xp_entry_fee, userId]
+          );
+
+          // Record XP refund
+          await connection.query(`
+            INSERT INTO xp_transactions 
+            (user_id, tournament_id, amount, type, description, created_at)
+            VALUES (?, ?, ?, 'refund', ?, NOW())
+          `, [
+            userId,
+            id,
+            tournament.xp_entry_fee,
+            `XP refund for removal from tournament: ${tournament.name}`
+          ]);
+        }
+
+        // Notify user
+        await connection.query(`
+          INSERT INTO notifications 
+          (user_id, message, type, status, tournament_id, created_at)
+          VALUES (?, ?, 'system', 'unread', ?, NOW())
+        `, [
+          userId,
+          `You have been removed from tournament "${tournament.name}" by admin. ${tournament.xp_entry_fee > 0 ? 'Your entry fee has been refunded.' : ''}`,
+          id
+        ]);
+
+        // Log admin activity
+        await connection.query(`
+          INSERT INTO admin_activity_logs 
+          (admin_id, action_type, description, details) 
+          VALUES (?, 'participant_removal', ?, ?)
+        `, [
+          adminId,
+          `Removed participant ${userId} from tournament #${id}`,
+          JSON.stringify({
+            reason,
+            participant_username: participant.username,
+            tournament_name: tournament.name,
+            entry_fee_refunded: tournament.xp_entry_fee
+          })
+        ]);
+
+        console.log('✅ Participant removed successfully');
+      } catch (error) {
+        console.error('❌ Error within removal transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Participant removed successfully',
+      refunded: tournament.xp_entry_fee > 0
+    });
+
+  } catch (error) {
+    console.error('❌ Remove participant error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to remove participant',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// GET /api/admin/tournaments/:id/matches - Get tournament matches
+router.get('/tournaments/:id/matches', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🎮 Admin: Fetching matches for tournament:', id);
+
+    const [matches] = await db.execute(`
+      SELECT tm.*,
+             p1.username as player1_username,
+             p2.username as player2_username,
+             w.username as winner_username
+      FROM tournament_matches tm
+      LEFT JOIN users p1 ON tm.player1_id = p1.id
+      LEFT JOIN users p2 ON tm.player2_id = p2.id
+      LEFT JOIN users w ON tm.winner_id = w.id
+      WHERE tm.tournament_id = ?
+      ORDER BY tm.round_number ASC, tm.id ASC
+    `, [id]);
+
+    console.log('✅ Found', matches.length, 'matches');
+
+    res.json({
+      success: true,
+      matches: matches || [],
+      tournament_id: id
+    });
+
+  } catch (error) {
+    console.error('❌ Get matches error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch matches' 
+    });
+  }
+});
+// ==================== ADMIN MONITORING ====================
+
+// GET /api/admin/monitored-tournaments - Get tournaments with admin monitoring
+router.get('/monitored-tournaments', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('🛡️ Admin: Fetching monitored tournaments');
+
+    const [tournaments] = await db.execute(`
+      SELECT t.*, 
+             u.username as creator_name,
+             COUNT(DISTINCT tp.id) as participants_count,
+             COUNT(DISTINCT aml.id) as log_count
+      FROM tournaments t
+      JOIN users u ON t.creator_id = u.id
+      LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id 
+        AND tp.status = 'joined'
+      LEFT JOIN admin_monitoring_logs aml ON t.id = aml.tournament_id
+      WHERE t.admin_monitoring = 1
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+    `);
+
+    res.json({
+      success: true,
+      tournaments: tournaments || [],
+      count: tournaments.length
+    });
+
+  } catch (error) {
+    console.error('❌ Get monitored tournaments error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch monitored tournaments'
+    });
+  }
+});
+
+// GET /api/admin/tournaments/:id/monitoring-logs - Get monitoring logs for tournament
+router.get('/tournaments/:id/monitoring-logs', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('📝 Admin: Fetching monitoring logs for tournament:', id);
+
+    const [logs] = await db.execute(`
+      SELECT aml.*, 
+             u.username as admin_name,
+             t.name as tournament_name
+      FROM admin_monitoring_logs aml
+      JOIN users u ON aml.admin_id = u.id
+      JOIN tournaments t ON aml.tournament_id = t.id
+      WHERE aml.tournament_id = ?
+      ORDER BY aml.created_at DESC
+      LIMIT 100
+    `, [id]);
+
+    res.json({
+      success: true,
+      logs: logs || [],
+      tournament_id: id,
+      count: logs.length
+    });
+
+  } catch (error) {
+    console.error('❌ Get monitoring logs error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch monitoring logs'
+    });
+  }
+});
+
+// GET /api/admin/tournaments/:id/monitoring-stats - Get monitoring statistics
+router.get('/tournaments/:id/monitoring-stats', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_actions,
+        SUM(CASE WHEN action_type = 'resolved_dispute' THEN 1 ELSE 0 END) as disputes_resolved,
+        SUM(CASE WHEN action_type = 'overrode_result' THEN 1 ELSE 0 END) as results_overridden,
+        SUM(CASE WHEN action_type = 'distributed_prize' THEN 1 ELSE 0 END) as prizes_distributed,
+        SUM(CASE WHEN action_type = 'warned_player' THEN 1 ELSE 0 END) as warnings_issued,
+        COUNT(DISTINCT admin_id) as unique_admins,
+        MIN(created_at) as first_action,
+        MAX(created_at) as last_action
+      FROM admin_monitoring_logs 
+      WHERE tournament_id = ?
+    `, [id]);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total_actions: 0,
+        disputes_resolved: 0,
+        results_overridden: 0,
+        prizes_distributed: 0,
+        warnings_issued: 0,
+        unique_admins: 0
+      },
+      tournament_id: id
+    });
+
+  } catch (error) {
+    console.error('❌ Get monitoring stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch monitoring statistics'
     });
   }
 });

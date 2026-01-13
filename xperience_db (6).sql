@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Jan 12, 2026 at 09:12 AM
+-- Generation Time: Jan 13, 2026 at 10:31 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -166,6 +166,7 @@ CREATE TABLE `admin_activity_logs` (
   `admin_id` int(11) NOT NULL,
   `action_type` varchar(50) NOT NULL,
   `description` text NOT NULL,
+  `details` text DEFAULT NULL,
   `ip_address` varchar(45) DEFAULT NULL,
   `user_agent` text DEFAULT NULL,
   `affected_user_id` int(11) DEFAULT NULL,
@@ -178,15 +179,141 @@ CREATE TABLE `admin_activity_logs` (
 -- Dumping data for table `admin_activity_logs`
 --
 
-INSERT INTO `admin_activity_logs` (`id`, `admin_id`, `action_type`, `description`, `ip_address`, `user_agent`, `affected_user_id`, `affected_transaction_id`, `metadata`, `created_at`) VALUES
-(1, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:34:49'),
-(2, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:34:49'),
-(3, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:35:44'),
-(4, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:35:45'),
-(5, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-17 22:12:23'),
-(6, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-17 22:12:23'),
-(7, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-18 18:01:43'),
-(8, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, '2025-12-18 18:01:44');
+INSERT INTO `admin_activity_logs` (`id`, `admin_id`, `action_type`, `description`, `details`, `ip_address`, `user_agent`, `affected_user_id`, `affected_transaction_id`, `metadata`, `created_at`) VALUES
+(1, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:34:49'),
+(2, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:34:49'),
+(3, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:35:44'),
+(4, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-17 09:35:45'),
+(5, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-17 22:12:23'),
+(6, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-17 22:12:23'),
+(7, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-18 18:01:43'),
+(8, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2025-12-18 18:01:44'),
+(9, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 14:42:09'),
+(10, 1, 'view', 'Viewed withdrawal requests', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 14:42:09'),
+(11, 1, 'user_update', 'Updated user profile', NULL, NULL, NULL, 1, NULL, NULL, '2026-01-12 18:49:55'),
+(12, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:14:22'),
+(13, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:14:23'),
+(14, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:14:57'),
+(15, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:15:37'),
+(16, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:15:39'),
+(17, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:16:15'),
+(18, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:16:15'),
+(19, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:16:32'),
+(20, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:21:02'),
+(21, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:21:02'),
+(22, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:21:18'),
+(23, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:33:59'),
+(24, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:34:00'),
+(25, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:34:06'),
+(26, 1, 'transaction_status', 'Updated transaction #176 from pending_approval to completed', NULL, NULL, NULL, 8, 176, NULL, '2026-01-12 19:43:04'),
+(27, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:43:04'),
+(28, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:47:13'),
+(29, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:47:13'),
+(30, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 19:47:28'),
+(31, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:17:50'),
+(32, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:18:07'),
+(33, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:18:09'),
+(34, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:18:33'),
+(35, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:18:43'),
+(36, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:18:48'),
+(37, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:18:56'),
+(38, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:27:26'),
+(39, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:27:26'),
+(40, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:28:01'),
+(41, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:33:17'),
+(42, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 20:33:37'),
+(43, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 21:31:44'),
+(44, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 21:31:44'),
+(45, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 21:33:37'),
+(46, 1, 'match_resolution', 'Resolved match #73 - Winner: 8', '{\"adminNotes\":\"\",\"prizeAmount\":\"5946.00\",\"admin_monitoring\":0,\"final_decision\":true}', NULL, NULL, 8, NULL, NULL, '2026-01-12 21:33:45'),
+(47, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-12 21:33:45'),
+(48, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:01:29'),
+(49, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:01:29'),
+(50, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:35'),
+(51, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:35'),
+(52, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:35'),
+(53, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:35'),
+(54, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:43'),
+(55, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:43'),
+(56, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:43'),
+(57, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:26:43'),
+(58, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:37:28'),
+(59, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:37:28'),
+(60, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:37:28'),
+(61, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:37:28'),
+(62, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:37:36'),
+(63, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:37:36'),
+(64, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:40:09'),
+(65, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:40:09'),
+(66, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:40:09'),
+(67, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:40:09'),
+(68, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:40:22'),
+(69, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:40:22'),
+(70, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:41:06'),
+(71, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:41:06'),
+(72, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:41:09'),
+(73, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:41:09'),
+(74, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:41:51'),
+(75, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:41:51'),
+(76, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:43:00'),
+(77, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:43:00'),
+(78, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:44:18'),
+(79, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:44:19'),
+(80, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:50:10'),
+(81, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:50:10'),
+(82, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:50:10'),
+(83, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:50:10'),
+(84, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:50:35'),
+(85, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:50:35'),
+(86, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:58:22'),
+(87, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:58:23'),
+(88, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:59:02'),
+(89, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:59:02'),
+(90, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:59:40'),
+(91, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 08:59:41'),
+(92, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:25'),
+(93, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:25'),
+(94, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:30'),
+(95, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:30'),
+(96, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:30'),
+(97, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:30'),
+(98, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:48'),
+(99, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:48'),
+(100, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:56'),
+(101, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:06:56'),
+(102, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:10:03'),
+(103, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:10:04'),
+(104, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:14:24'),
+(105, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:14:24'),
+(106, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:15:24'),
+(107, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:15:24'),
+(108, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:16:00'),
+(109, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:16:01'),
+(110, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:01'),
+(111, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:01'),
+(112, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:27'),
+(113, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:27'),
+(114, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:37'),
+(115, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:37'),
+(116, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:40'),
+(117, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:40'),
+(118, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:42'),
+(119, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:42'),
+(120, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:53'),
+(121, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:18:53'),
+(122, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:19:00'),
+(123, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:19:00'),
+(124, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:04'),
+(125, 1, 'view', 'Viewed transactions list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:05'),
+(126, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:07'),
+(127, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:07'),
+(128, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:07'),
+(129, 1, 'view', 'Viewed matches list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:07'),
+(130, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:09'),
+(131, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:10'),
+(132, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:28:43'),
+(133, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:30:58'),
+(134, 1, 'view', 'Viewed tournaments list', NULL, NULL, NULL, NULL, NULL, NULL, '2026-01-13 09:30:58');
 
 -- --------------------------------------------------------
 
@@ -866,7 +993,7 @@ INSERT INTO `matches` (`id`, `player1_id`, `player2_id`, `game_type`, `game`, `s
 (70, 4, NULL, 'individual', 'Call of Duty: Warzone', 32.00, 64.00, NULL, NULL, 'pending', '2025-12-25 11:50:43', '2025-12-26 11:49:00', NULL, NULL, NULL, 'entry_fee', 'specific', 'pufpuf', 'xp', 'XP', 32.00, 0, 1),
 (71, 14, 8, 'individual', 'Call of Duty: Warzone', 4973.00, 9946.00, NULL, NULL, 'ongoing', '2025-12-25 12:00:31', '2025-12-26 12:00:00', NULL, NULL, '2025-12-30 10:22:28', 'entry_fee', 'open', NULL, 'xp', 'XP', 4973.00, 0, 1),
 (72, 14, 4, 'individual', 'Call of Duty: Mobile', 4973.00, 9946.00, NULL, 14, '', '2025-12-26 11:15:57', '2025-12-27 11:15:00', NULL, NULL, '2025-12-26 12:07:49', 'entry_fee', 'specific', 'lenovo', 'xp', 'XP', 4973.00, 0, 1),
-(73, 14, 8, 'individual', 'Free Fire', 2973.00, 5946.00, NULL, NULL, 'ongoing', '2025-12-26 12:17:31', '2025-12-27 12:16:00', NULL, NULL, '2025-12-26 12:31:31', 'entry_fee', 'specific', 'destroyer', 'xp', 'XP', 2973.00, 0, 1),
+(73, 14, 8, 'individual', 'Free Fire', 2973.00, 5946.00, NULL, 8, 'completed', '2025-12-26 12:17:31', '2025-12-27 12:16:00', '2026-01-12 21:33:45', NULL, '2025-12-26 12:31:31', 'entry_fee', 'specific', 'destroyer', 'xp', 'XP', 2973.00, 0, 1),
 (74, 14, 8, 'individual', 'Call of Duty: Mobile', 2083.00, 4166.00, NULL, 8, 'completed', '2025-12-27 08:55:18', '2025-12-28 08:54:00', '2025-12-27 10:21:51', NULL, '2025-12-27 09:36:44', 'entry_fee', 'specific', 'destroyer', 'xp', 'XP', 2083.00, 0, 1),
 (75, 8, NULL, 'individual', 'Call of Duty: Mobile', 2000.00, 4248.30, 4998.00, NULL, 'pending', '2025-12-27 09:44:12', '2025-12-28 09:44:00', NULL, NULL, NULL, 'custom', 'open', NULL, 'money', 'NGN', NULL, 0, 1),
 (76, 12, 8, 'individual', 'Call of Duty: Mobile', 30000.00, 29750.00, 35000.00, 12, 'completed', '2025-12-27 10:41:56', '2025-12-28 10:41:00', '2025-12-27 10:47:08', NULL, '2025-12-27 10:42:53', 'custom', 'specific', 'destroyer', 'money', 'NGN', NULL, 0, 1),
@@ -3671,7 +3798,9 @@ INSERT INTO `transactions` (`id`, `user_id`, `amount`, `currency`, `type`, `stat
 (172, 16, -40000.00, 'USD', 'withdrawal', 'completed', 'XP-CONV-1767681649991-izgpqzmi7', NULL, NULL, 'Converted to 833333 XP points', NULL, NULL, NULL, '2026-01-06 06:40:49', NULL, '2026-01-06 06:40:49'),
 (173, 15, -40000.00, 'USD', 'withdrawal', 'completed', 'XP-CONV-1767681979311-3jkgfjqgc', NULL, NULL, 'Converted to 833333 XP points', NULL, NULL, NULL, '2026-01-06 06:46:19', NULL, '2026-01-06 06:46:19'),
 (174, 3, -300000.00, 'USD', 'withdrawal', 'completed', 'XP-CONV-1767725263786-q4hqzy0nr', NULL, NULL, 'Converted to 6250000 XP points', NULL, NULL, NULL, '2026-01-06 18:47:43', NULL, '2026-01-06 18:47:43'),
-(175, 6, -68500.00, 'USD', 'withdrawal', 'completed', 'XP-CONV-1767762329236-elkpyt25y', NULL, NULL, 'Converted to 1427083 XP points', NULL, NULL, NULL, '2026-01-07 05:05:29', NULL, '2026-01-07 05:05:29');
+(175, 6, -68500.00, 'USD', 'withdrawal', 'completed', 'XP-CONV-1767762329236-elkpyt25y', NULL, NULL, 'Converted to 1427083 XP points', NULL, NULL, NULL, '2026-01-07 05:05:29', NULL, '2026-01-07 05:05:29'),
+(176, 8, -2000.00, 'USD', 'withdrawal', 'completed', 'XTX-1768244006729-h2jk263qh', NULL, NULL, 'Withdrawal request to bank', NULL, NULL, '{\"bank_name\":\"opay\",\"bank_code\":\"111\",\"account_number\":\"8078660415\",\"account_name\":\"destroyer@gmail.com\",\"user_id\":8,\"username\":\"destroyer\"}', '2026-01-12 18:53:26', NULL, '2026-01-12 19:43:04'),
+(183, 8, 5946.00, 'NGN', '', 'completed', 'MATCH_PRIZE_73_1768253625095', NULL, NULL, 'Prize for winning match #73', NULL, NULL, NULL, '2026-01-12 21:33:45', NULL, '2026-01-12 21:33:45');
 
 -- --------------------------------------------------------
 
@@ -3739,19 +3868,19 @@ CREATE TABLE `users` (
 --
 
 INSERT INTO `users` (`id`, `username`, `email`, `firstname`, `lastname`, `password`, `profile_pic`, `rank`, `matches_played`, `tournaments_played`, `tournaments_won`, `wins`, `losses`, `balance`, `is_admin`, `created_at`, `updated_at`, `admin_approved`, `currency`, `win_rate`, `admin_role`, `last_admin_login`, `is_banned`, `enable_2fa`, `login_alerts`, `session_timeout`, `wallet_account_number`, `transaction_pin`, `pin_set_at`, `reset_token`, `token_expiry`, `favorite_games`, `bio`, `account_status`, `xp_points`, `admin_permissions`, `last_seen`) VALUES
-(1, 'danex', 'ogbeifundaniel0@gmail.com', NULL, NULL, '$2y$10$eT048b9A1qGnSDScy6IgHOAgNrFpZ4xI8DL6Lc/JVCZP8mavwKAja', 'profile_687b310582dc28.89271792.jpg', 'E', 4, 0, 0, 0, 4, 428100.00, 0, '2025-07-01 17:16:33', '2026-01-12 08:02:02', 0, 'NGN', 0.00, NULL, '2025-07-21 20:07:43', 0, 0, 1, 60, 'XP00000001', NULL, NULL, '416c2171f2d8d40c9972f35cdf36a0e6327b10cd089709ccf3502a768ced7d57', '2025-11-11 11:16:06', NULL, NULL, 'active', 0, NULL, '2026-01-12 08:02:02'),
+(1, 'danex', 'ogbeifundaniel0@gmail.com', NULL, NULL, '$2y$10$eT048b9A1qGnSDScy6IgHOAgNrFpZ4xI8DL6Lc/JVCZP8mavwKAja', 'profile_687b310582dc28.89271792.jpg', 'D', 4, 0, 0, 0, 4, 428100.00, 0, '2025-07-01 17:16:33', '2026-01-12 18:49:55', 0, 'NGN', 0.00, NULL, '2025-07-21 20:07:43', 0, 0, 1, 60, 'XP00000001', NULL, NULL, '416c2171f2d8d40c9972f35cdf36a0e6327b10cd089709ccf3502a768ced7d57', '2025-11-11 11:16:06', NULL, NULL, 'active', 0, NULL, '2026-01-12 08:02:02'),
 (3, 'admin', 'woleadenuga@gmail.com', NULL, NULL, '$2y$10$NxMklClkrhqFjsl.WiXwOeI2gYjuyTn18X7c2DCs7Toon/Wc26SeS', 'default.png', 'E', 0, 0, 0, 0, 0, 96000.00, 1, '2025-07-01 18:40:04', '2026-01-12 07:58:53', 1, 'USD', 0.00, 'super_admin', '2026-01-06 06:38:19', 0, 0, 1, 60, 'XP00000003', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2026-01-06 18:47:16', NULL, NULL, NULL, NULL, 'active', 6247920, '[\"view_dashboard\", \"manage_users\", \"approve_withdrawals\", \"view_transactions\", \"manage_xp_rates\"]', '2026-01-12 07:58:53'),
-(4, 'lenovo', 'michaelphid@gmail.com', 'lenovo', 'stale', '$2y$10$i4blxQh7qjKUHvM.YhtfBONebyFw5S/OLxMq5DTdgHFXwpBVbHU7W', 'profile_687e6c5d717a96.14040694.jpg', 'SS', 43, 0, 2, 33, 13, 0.00, 0, '2025-07-01 20:37:23', '2026-01-12 07:57:23', NULL, 'NGN', 76.74, NULL, NULL, 0, 1, 1, 30, 'XP00000004', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-26 12:07:03', 'f5fc08bb8b1d2a2d6cf10d35b3047dbb41f75bc6434f23882803e1c4fe60f88f', '2025-11-11 11:21:20', NULL, NULL, 'active', 3927, NULL, '2026-01-12 07:57:23'),
+(4, 'lenovo', 'michaelphid@gmail.com', 'lenovo', 'stale', '$2y$10$i4blxQh7qjKUHvM.YhtfBONebyFw5S/OLxMq5DTdgHFXwpBVbHU7W', 'profile_687e6c5d717a96.14040694.jpg', 'SS', 43, 0, 2, 33, 13, 0.00, 0, '2025-07-01 20:37:23', '2026-01-12 18:52:01', NULL, 'NGN', 76.74, NULL, NULL, 0, 1, 1, 30, 'XP00000004', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-26 12:07:03', 'f5fc08bb8b1d2a2d6cf10d35b3047dbb41f75bc6434f23882803e1c4fe60f88f', '2025-11-11 11:21:20', NULL, NULL, 'active', 3927, NULL, '2026-01-12 18:52:01'),
 (5, 'phid', 'tayodestiny@gmail.com', NULL, NULL, '$2y$10$uKPXJjN/JEQg.2quz5a1jOCtxymoX3oNHWa9lWrnoh/J81VD8whay', 'default.png', 'E', 0, 0, 0, 0, 0, 0.00, 0, '2025-07-06 02:01:06', '2026-01-12 08:04:03', NULL, 'USD', 0.00, NULL, NULL, 0, 0, 1, 60, 'XP00000005', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 0, NULL, '2026-01-12 08:04:03'),
 (6, 'tomatoe', 'tomatoe@gmail.com', NULL, NULL, '$2y$10$v/m0EJKt8zknGq9S6BznkeL/z60gbHSkIQegjBgrBg5gbY62lt632', 'default.png', 'E', 7, 0, 0, 1, 6, 0.00, 0, '2025-07-06 02:04:25', '2026-01-12 07:55:31', NULL, 'USD', 14.29, NULL, NULL, 0, 0, 1, 60, 'XP00000006', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2026-01-07 05:05:01', NULL, NULL, NULL, NULL, 'active', 1426023, NULL, '2026-01-12 07:55:31'),
 (7, 'philip', 'philip@gmail.com', NULL, NULL, '$2y$10$87GrmnZGidMQHPwRglize.9Z.Wk9OpoTQdVhB3r4hLfW3SvFQhxDC', 'profile_6869dabe5a78f3.36109401.jpg', 'E', 0, 0, 0, 0, 0, 2000.00, 0, '2025-07-06 02:07:11', '2026-01-12 08:05:07', NULL, 'USD', 0.00, NULL, NULL, 0, 0, 1, 60, 'XP00000007', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 0, NULL, '2026-01-12 08:05:07'),
-(8, 'destroyer', 'destroyer@gmail.com', NULL, NULL, '$2y$10$7HNWs09/lbZuBQOuKfcFXuSzcJd/I1v7ceGcCm3IzRxA9XGkepT7W', 'default.png', 'E', 36, 0, 3, 14, 24, 98948962.89, 0, '2025-07-29 22:32:46', '2026-01-12 08:07:14', NULL, 'USD', 38.89, NULL, NULL, 0, 0, 1, 60, 'XP00000008', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-26 12:29:54', NULL, NULL, NULL, NULL, 'active', 20843574, NULL, '2026-01-12 08:07:14'),
+(8, 'destroyer', 'destroyer@gmail.com', NULL, NULL, '$2y$10$7HNWs09/lbZuBQOuKfcFXuSzcJd/I1v7ceGcCm3IzRxA9XGkepT7W', 'default.png', 'E', 37, 0, 3, 15, 24, 98952908.89, 0, '2025-07-29 22:32:46', '2026-01-13 09:30:07', NULL, 'USD', 42.11, NULL, NULL, 0, 0, 1, 60, 'XP00000008', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-26 12:29:54', NULL, NULL, NULL, NULL, 'active', 20843574, NULL, '2026-01-13 09:30:07'),
 (9, 'mystic', 'mystic@gmail.com', NULL, NULL, '$2y$10$4f97QcdFcHaH2TZhIPBY4uiw8uphwagDnaykb/AgrnUlV7ShFXdUG', 'default.png', 'C', 23, 0, 0, 12, 12, 7175.00, 0, '2025-07-29 22:38:16', '2026-01-12 07:56:41', NULL, 'USD', 52.17, NULL, NULL, 0, 0, 1, 60, 'XP00000009', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 181, NULL, '2026-01-12 07:56:41'),
 (10, 'flawless', 'flawless@gmail.com', NULL, NULL, '$2y$10$GYQO5yammQ4mNvx.zI92mOTbglY7Br3Z07OWxdQpxXJ9a2XMQsxE2', 'default.png', 'D', 7, 0, 0, 4, 3, 1000.00, 0, '2025-07-31 12:03:15', '2026-01-12 07:58:19', NULL, 'USD', 57.14, NULL, NULL, 0, 0, 1, 60, 'XP00000010', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 0, NULL, '2026-01-12 07:58:19'),
 (11, 'leinado', 'leinado@gmail.com', NULL, NULL, '$2y$10$5pZfcyYtVs8.Ny5PSCbpn.ikZkaxqytBanN.W7VUYUqc4yMPN6dcK', 'default.png', 'E', 0, 0, 0, 0, 0, 89999999.99, 0, '2025-07-31 12:08:09', '2026-01-12 08:05:50', NULL, 'USD', 0.00, NULL, NULL, 0, 0, 1, 60, 'XP00000011', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2026-01-06 06:15:57', NULL, NULL, NULL, NULL, 'active', 208332833, NULL, '2026-01-12 08:05:50'),
 (12, 'kratos', 'kratos@gmail.com', NULL, NULL, '$2y$10$KjJcg8UKS2DLcUC8Xb1/AukOnKd0Le6isSR7pMYGubxb72q.Hl/7m', 'profile_68c6dd24b74589.75579135.jpg', 'B', 20, 0, 0, 13, 7, 99989999.99, 0, '2025-07-31 12:11:51', '2026-01-12 07:57:52', NULL, 'USD', 65.00, NULL, NULL, 0, 0, 1, 60, 'XP00000012', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-27 10:32:14', NULL, NULL, NULL, NULL, 'active', 20831863, NULL, '2026-01-12 07:57:52'),
 (13, 'tsunami', 'tsunami@gmail.com', NULL, NULL, '$2y$10$zSCFPQg9Wq4mn6y08cofvOv1YjSirtCRM1TDAfLyUwQYNkHBdvCpm', 'default.png', 'E', 0, 0, 0, 0, 0, 3000.00, 0, '2025-07-31 12:13:54', '2025-10-23 17:15:27', NULL, 'USD', 0.00, NULL, NULL, 0, 0, 1, 60, 'XP00000013', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 0, NULL, NULL),
-(14, 'pufpuf', 'pufpuf@gmail.com', NULL, NULL, '$2y$10$SlfwPHJJ/5v.i2uufPp53eOaFvCIYl6dG771k.UdYESXSu2TfXPDm', 'default.png', 'E', 10, 0, 0, 4, 6, -14350.00, 0, '2025-09-14 15:26:39', '2026-01-12 07:59:43', NULL, 'USD', 36.36, NULL, NULL, 0, 0, 1, 60, 'XP00000014', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-16 10:21:38', NULL, NULL, NULL, NULL, 'active', 81608, NULL, '2026-01-12 07:59:43'),
+(14, 'pufpuf', 'pufpuf@gmail.com', NULL, NULL, '$2y$10$SlfwPHJJ/5v.i2uufPp53eOaFvCIYl6dG771k.UdYESXSu2TfXPDm', 'default.png', 'E', 11, 0, 0, 4, 7, -14350.00, 0, '2025-09-14 15:26:39', '2026-01-12 21:33:45', NULL, 'USD', 33.33, NULL, NULL, 0, 0, 1, 60, 'XP00000014', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2025-12-16 10:21:38', NULL, NULL, NULL, NULL, 'active', 81608, NULL, '2026-01-12 20:06:22'),
 (15, 'gradust', 'gradust@gmail.com', NULL, NULL, '$2y$10$Fa6n99URcq91LWw4tWbvGOErQh6QDoqBUGdp2YqXK1mYZqEXfgaxG', 'default.png', 'E', 8, 0, 0, 2, 6, 28625.00, 0, '2025-10-02 10:19:43', '2026-01-12 07:58:07', NULL, 'USD', 25.00, NULL, NULL, 0, 0, 1, 60, 'XP00000015', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2026-01-06 06:45:57', NULL, NULL, NULL, NULL, 'active', 831703, NULL, '2026-01-12 07:58:07'),
 (16, 'plaything', 'plaything@gmail.com', NULL, NULL, '$2y$10$a3it.V2VsbVJ/cQljJeYSuLvv03P//hwrs5ncm.FtxnNux2iPQrdG', 'default.png', 'C', 24, 0, 0, 13, 11, 21850.00, 0, '2025-10-02 10:21:40', '2026-01-12 07:56:26', NULL, 'USD', 54.17, NULL, NULL, 0, 0, 1, 60, 'XP00000016', 'cbfad02f9ed2a8d1e08d8f74f5303e9eb93637d47f82ab6f1c15871cf8dd0481', '2026-01-06 06:40:27', NULL, NULL, NULL, NULL, 'active', 831953, NULL, '2026-01-12 07:56:26'),
 (17, 'natest be disoo', 'test@example.com', NULL, NULL, '$2b$12$HdYVxXEr8B.7y41/etZrFeYbY2pe/nvk.wlKjOKLaUPgLkgnxKdbS', 'default.png', 'E', 4, 0, 0, 1, 3, 0.00, 0, '2025-11-18 08:54:24', '2026-01-12 07:56:13', NULL, 'USD', 25.00, NULL, NULL, 0, 0, 1, 60, 'WALLET-000017', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 0, NULL, '2026-01-12 07:56:13'),
@@ -3995,6 +4124,13 @@ CREATE TABLE `withdrawal_requests` (
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `withdrawal_requests`
+--
+
+INSERT INTO `withdrawal_requests` (`id`, `user_id`, `transaction_id`, `amount`, `currency`, `bank_name`, `bank_code`, `account_number`, `account_name`, `status`, `receipt_number`, `admin_notes`, `processed_by`, `processed_at`, `created_at`, `updated_at`) VALUES
+(1, 8, 176, 2000.00, 'USD', 'opay', '111', '8078660415', 'destroyer@gmail.com', 'processing', 'XPR-1768244006745-000008', NULL, 1, '2026-01-12 19:43:04', '2026-01-12 18:53:26', '2026-01-12 19:43:04');
 
 -- --------------------------------------------------------
 
@@ -4721,7 +4857,7 @@ ALTER TABLE `xp_transactions`
 -- AUTO_INCREMENT for table `admin_activity_logs`
 --
 ALTER TABLE `admin_activity_logs`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=135;
 
 --
 -- AUTO_INCREMENT for table `admin_logs`
@@ -5051,7 +5187,7 @@ ALTER TABLE `tournament_teams`
 -- AUTO_INCREMENT for table `transactions`
 --
 ALTER TABLE `transactions`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=176;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=184;
 
 --
 -- AUTO_INCREMENT for table `trust_score_history`
@@ -5105,7 +5241,7 @@ ALTER TABLE `withdrawal_approvals`
 -- AUTO_INCREMENT for table `withdrawal_requests`
 --
 ALTER TABLE `withdrawal_requests`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
 -- AUTO_INCREMENT for table `xp_rates`
