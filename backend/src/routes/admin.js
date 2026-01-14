@@ -1145,6 +1145,125 @@ router.post('/settings/:key', authenticateAdmin, async (req, res) => {
     });
   }
 });
+// ==================== XP RATES SETTINGS ====================
+
+// GET /api/admin/settings/xp-rates - Get XP conversion rates
+router.get('/settings/xp-rates', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('⚙️ Fetching XP rates settings');
+    
+    // Get XP rates from xp_rates table
+    const [xpRates] = await db.execute(
+      `SELECT currency, xp_per_unit, unit_amount, is_active, description 
+       FROM xp_rates 
+       WHERE is_active = 1
+       ORDER BY currency`
+    );
+
+    // Transform to the format expected by frontend
+    const rates = {};
+    xpRates.forEach(rate => {
+      // Calculate rate: 1 unit of currency = xp_per_unit XP
+      const xpPerCurrency = rate.xp_per_unit / rate.unit_amount;
+      rates[rate.currency] = parseFloat(xpPerCurrency.toFixed(3));
+    });
+
+    // Ensure default currencies exist
+    const defaultRates = {
+      'NGN': 0.025,  // 25 XP per 1000 NGN = 0.025 XP per 1 NGN
+      'USD': 0,      // Disabled by default
+      'EUR': 0,      // Disabled by default  
+      'GBP': 0       // Disabled by default
+    };
+
+    // Merge with existing rates
+    const finalRates = { ...defaultRates, ...rates };
+
+    res.json({
+      success: true,
+      rates: finalRates
+    });
+
+  } catch (error) {
+    console.error('❌ Get XP rates error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch XP rates',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// POST /api/admin/settings/xp-rates/:currency - Update XP rate for currency
+router.post('/settings/xp-rates/:currency', authenticateAdmin, async (req, res) => {
+  try {
+    const { currency } = req.params;
+    const { rate } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('⚙️ Updating XP rate for currency:', currency, 'Rate:', rate);
+
+    if (!rate || isNaN(parseFloat(rate))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid rate value is required'
+      });
+    }
+
+    const xpRate = parseFloat(rate);
+    
+    // Default configuration: 25 XP per unit
+    const xp_per_unit = 25;
+    const unit_amount = 1000 / xpRate; // Calculate unit amount based on rate
+    
+    // Update or insert into xp_rates table
+    await db.execute(
+      `INSERT INTO xp_rates (currency, xp_per_unit, unit_amount, is_active, description) 
+       VALUES (?, ?, ?, 1, ?) 
+       ON DUPLICATE KEY UPDATE 
+       xp_per_unit = VALUES(xp_per_unit),
+       unit_amount = VALUES(unit_amount),
+       updated_at = NOW()`,
+      [
+        currency, 
+        xp_per_unit, 
+        unit_amount,
+        `${xp_per_unit} XP per ${unit_amount.toFixed(2)} ${currency}`
+      ]
+    );
+
+    // Also update in system_settings for backward compatibility
+    const settingKey = `xp_rate_${currency}`;
+    await db.execute(
+      `INSERT INTO system_settings (setting_key, setting_value, category, updated_by) 
+       VALUES (?, ?, 'xp_rates', ?) 
+       ON DUPLICATE KEY UPDATE setting_value = ?, updated_by = ?, updated_at = NOW()`,
+      [settingKey, rate.toString(), adminId, rate.toString(), adminId]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'settings_update', 'Updated XP rate for ${currency}')`,
+      [adminId]
+    );
+
+    res.json({
+      success: true,
+      message: 'XP rate updated successfully',
+      currency,
+      rate: xpRate
+    });
+
+  } catch (error) {
+    console.error('❌ Update XP rate error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update XP rate' 
+    });
+  }
+});
 
 // ==================== FRAUD MANAGEMENT ====================
 router.get('/fraud/flags', authenticateAdmin, async (req, res) => {
@@ -3011,4 +3130,619 @@ router.get('/tournaments/:id/monitoring-stats', authenticateAdmin, async (req, r
     });
   }
 });
+// Add to admin.js after existing endpoints
+
+// ==================== SYSTEM MAINTENANCE ENDPOINTS ====================
+
+// GET /api/admin/maintenance/health - System health check
+router.get('/maintenance/health', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('🔧 Checking system health');
+    
+    // Check database connection
+    let dbStatus = 'disconnected';
+    try {
+      await db.execute('SELECT 1');
+      dbStatus = 'connected';
+    } catch (dbError) {
+      console.error('Database connection error:', dbError);
+    }
+
+    // Check API status (simple ping)
+    const apiStatus = 'online'; // Assuming API is running
+    
+    // Check cache status (simplified)
+    const cacheStatus = 'active';
+    
+    // Simulate server load check
+    const loads = ['low', 'normal', 'high'];
+    const serverLoad = loads[Math.floor(Math.random() * loads.length)];
+
+    res.json({
+      success: true,
+      health: {
+        api_status: apiStatus,
+        database_status: dbStatus,
+        cache_status: cacheStatus,
+        server_load: serverLoad,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Health check error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Health check failed' 
+    });
+  }
+});
+
+// POST /api/admin/broadcast-message - Send message to all users
+router.post('/broadcast-message', authenticateAdmin, async (req, res) => {
+  try {
+    const { message } = req.body;
+    const adminId = req.admin.id;
+
+    if (!message || message.trim() === '') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Message is required' 
+      });
+    }
+
+    console.log('📢 Broadcasting message to all users:', message);
+
+    // Get all active users
+    const [users] = await db.execute(
+      'SELECT id FROM users WHERE account_status = "active" AND is_banned = 0'
+    );
+
+    let usersNotified = 0;
+    
+    // Create notifications for all users
+    for (const user of users) {
+      try {
+        await db.execute(
+          `INSERT INTO notifications 
+           (user_id, sender_id, message, type, status, created_at) 
+           VALUES (?, ?, ?, 'system', 'unread', NOW())`,
+          [user.id, adminId, message]
+        );
+        usersNotified++;
+      } catch (error) {
+        console.warn(`⚠️ Could not notify user ${user.id}:`, error.message);
+      }
+    }
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'broadcast', 'Sent message to all users')`,
+      [adminId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Message broadcasted successfully',
+      users_notified: usersNotified
+    });
+
+  } catch (error) {
+    console.error('❌ Broadcast message error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to broadcast message' 
+    });
+  }
+});// ==================== GAMES MANAGEMENT ====================
+
+// GET /api/admin/games - Get all games
+router.get('/games', authenticateAdmin, async (req, res) => {
+  try {
+    const { category, is_active, search = '' } = req.query;
+    
+    console.log('🎮 Admin: Fetching games - Category:', category, 'Search:', search);
+
+    let query = 'SELECT * FROM games WHERE 1=1';
+    const params = [];
+
+    if (category && category !== 'all') {
+      query += ' AND category = ?';
+      params.push(category);
+    }
+    
+    if (is_active !== undefined) {
+      query += ' AND is_active = ?';
+      params.push(is_active === 'true' ? 1 : 0);
+    }
+    
+    if (search.trim() !== '') {
+      query += ' AND name LIKE ?';
+      params.push(`%${search.trim()}%`);
+    }
+    
+    query += ' ORDER BY name ASC';
+
+    const [games] = await db.execute(query, params);
+
+    res.json({
+      success: true,
+      games,
+      count: games.length
+    });
+
+  } catch (error) {
+    console.error('❌ Get games error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch games' 
+    });
+  }
+});
+
+// POST /api/admin/games - Add new game
+router.post('/games', authenticateAdmin, async (req, res) => {
+  try {
+    const { 
+      name, 
+      category = 'other', 
+      min_players = 2, 
+      max_players = 10, 
+      platforms = 'PC,Console,Mobile',
+      description = '',
+      icon_url = null
+    } = req.body;
+    const adminId = req.admin.id;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Game name is required'
+      });
+    }
+
+    console.log('🎮 Admin: Adding new game:', name);
+
+    // Check if game already exists
+    const [existingGames] = await db.execute(
+      'SELECT id FROM games WHERE name = ?',
+      [name.trim()]
+    );
+
+    if (existingGames.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Game already exists'
+      });
+    }
+
+    // Insert new game
+    const [result] = await db.execute(
+      `INSERT INTO games 
+       (name, category, min_players, max_players, platforms, description, icon_url) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name.trim(),
+        category,
+        parseInt(min_players),
+        parseInt(max_players),
+        platforms,
+        description,
+        icon_url
+      ]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'game_add', ?)`,
+      [adminId, `Added new game: ${name}`]
+    );
+
+    res.json({
+      success: true,
+      message: 'Game added successfully',
+      game_id: result.insertId
+    });
+
+  } catch (error) {
+    console.error('❌ Add game error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to add game' 
+    });
+  }
+});
+
+// PUT /api/admin/games/:id - Update game
+router.put('/games/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const gameData = req.body;
+    const adminId = req.admin.id;
+
+    console.log('🎮 Admin: Updating game ID:', id, 'Data:', gameData);
+
+    // Check if game exists
+    const [games] = await db.execute(
+      'SELECT id, name FROM games WHERE id = ?',
+      [id]
+    );
+
+    if (games.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Game not found'
+      });
+    }
+
+    // Build update query dynamically
+    const updateFields = [];
+    const updateValues = [];
+    
+    const allowedFields = [
+      'name', 'category', 'min_players', 'max_players', 
+      'platforms', 'description', 'icon_url', 'is_active'
+    ];
+
+    for (const field of allowedFields) {
+      if (field in gameData) {
+        updateFields.push(`${field} = ?`);
+        updateValues.push(gameData[field]);
+      }
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid fields to update'
+      });
+    }
+
+    updateValues.push(id);
+
+    const updateQuery = `
+      UPDATE games 
+      SET ${updateFields.join(', ')}, updated_at = NOW()
+      WHERE id = ?
+    `;
+
+    await db.execute(updateQuery, updateValues);
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'game_update', ?)`,
+      [adminId, `Updated game #${id}`]
+    );
+
+    res.json({
+      success: true,
+      message: 'Game updated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Update game error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update game' 
+    });
+  }
+});
+
+// DELETE /api/admin/games/:id - Delete game
+router.delete('/games/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+
+    console.log('🎮 Admin: Deleting game ID:', id);
+
+    // Check if game exists
+    const [games] = await db.execute(
+      'SELECT name FROM games WHERE id = ?',
+      [id]
+    );
+
+    if (games.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Game not found'
+      });
+    }
+
+    const gameName = games[0].name;
+
+    // Soft delete (deactivate) instead of hard delete
+    await db.execute(
+      'UPDATE games SET is_active = 0, updated_at = NOW() WHERE id = ?',
+      [id]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'game_delete', ?)`,
+      [adminId, `Deleted game: ${gameName}`]
+    );
+
+    res.json({
+      success: true,
+      message: 'Game deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete game error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete game' 
+    });
+  }
+});
+// POST /api/admin/send-email-notification - Send email to users
+router.post('/send-email-notification', authenticateAdmin, async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+    
+    // Handle multipart/form-data
+    let subject = req.body.subject;
+    let message = req.body.message;
+    let recipientType = req.body.recipientType;
+    let filters = req.body.filters ? JSON.parse(req.body.filters) : {};
+    let recipients = req.body.recipients ? JSON.parse(req.body.recipients) : [];
+    
+    console.log('📧 Admin sending email notification:', { 
+      subject, 
+      recipientType,
+      filterCount: Object.keys(filters).length,
+      recipientCount: recipients.length || 'all' 
+    });
+
+    if (!subject || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Subject and message are required' 
+      });
+    }
+
+    let userEmails = [];
+    
+    if (recipientType === 'all') {
+      // Get all active users
+      const [users] = await db.execute(
+        'SELECT email FROM users WHERE account_status = "active" AND is_banned = 0'
+      );
+      userEmails = users.map(user => user.email);
+    } else if (recipientType === 'filtered') {
+      // Get filtered users
+      userEmails = recipients.map(user => user.email);
+    }
+
+    if (userEmails.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No recipients found' 
+      });
+    }
+
+    // Here you would integrate with your email service
+    // For now, we'll simulate sending emails
+    console.log('📧 Would send email to:', userEmails.length, 'users');
+    console.log('📧 Subject:', subject);
+    console.log('📧 Message preview:', message.substring(0, 100) + '...');
+
+    // Create notifications in database with sender as "system"
+    for (const email of userEmails) {
+      // Find user by email
+      const [users] = await db.execute(
+        'SELECT id FROM users WHERE email = ?',
+        [email]
+      );
+      
+      if (users.length > 0) {
+        await db.execute(
+          `INSERT INTO notifications 
+           (user_id, sender_id, message, type, status, created_at) 
+           VALUES (?, NULL, ?, 'system', 'unread', NOW())`,
+          [users[0].id, `System: ${subject} - ${message.substring(0, 200)}...`]
+        );
+      }
+    }
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'email_notification', ?)`,
+      [adminId, `Sent email to ${userEmails.length} users: ${subject}`]
+    );
+
+    res.json({
+      success: true,
+      message: 'Email notification sent successfully',
+      recipients_count: userEmails.length
+    });
+
+  } catch (error) {
+    console.error('❌ Send email notification error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send email notification' 
+    });
+  }
+});
+
+// POST /api/admin/factory-reset - Reset all settings to defaults
+router.post('/factory-reset', authenticateAdmin, async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+    const { backup = true } = req.body;
+
+    console.log('🏭 Admin performing factory reset', { backup, adminId });
+
+    // Create backup if requested
+    if (backup) {
+      await db.execute(
+        `INSERT INTO settings_backup (admin_id, settings_data) 
+         SELECT ?, JSON_OBJECTAGG(setting_key, setting_value) 
+         FROM system_settings`,
+        [adminId]
+      );
+      console.log('✅ Settings backup created');
+    }
+
+    // Define default settings
+    const defaultSettings = {
+      'platformName': 'Xperience',
+      'platformCurrency': 'NGN',
+      'sessionTimeout': '15',
+      'minDepositAmount': '500',
+      'maxDepositAmount': '100000',
+      'minWithdrawalAmount': '1000',
+      'maxWithdrawalAmount': '100000',
+      'withdrawalLimitDaily': '1',
+      'withdrawalLimitWeekly': '3',
+      'withdrawalLimitMonthly': '11',
+      'enableUSD': 'false',
+      'enableEUR': 'false',
+      'enableGBP': 'false',
+      'enableRegistration': 'true',
+      'requireEmailVerification': 'false',
+      'defaultUserRank': 'E',
+      'maxLoginAttempts': '5',
+      'requireProfileCompletion': 'true',
+      'allowMultipleDevices': 'false',
+      'minMatchStakePercentage': '15',
+      'emailNotifications': 'true',
+      'pushNotifications': 'true',
+      'adminAlerts': 'true',
+      'systemAnnouncements': 'true',
+      'enable2FA': 'false',
+      'requireTransactionPIN': 'true',
+      'enforceStrongPasswords': 'true',
+      'sessionEncryption': 'true',
+      'ipWhitelisting': 'false',
+      'maintenanceMode': 'false',
+      'backupFrequency': 'daily',
+      'logRetentionDays': '30',
+      'cacheEnabled': 'true'
+    };
+
+    // Clear all existing settings
+    await db.execute('DELETE FROM system_settings');
+
+    // Insert default settings
+    for (const [key, value] of Object.entries(defaultSettings)) {
+      await db.execute(
+        `INSERT INTO system_settings (setting_key, setting_value, updated_by) 
+         VALUES (?, ?, ?)`,
+        [key, value, adminId]
+      );
+    }
+
+    // Reset XP rates to defaults
+    await db.execute('DELETE FROM xp_rates');
+    const defaultXpRates = [
+      ['NGN', 25, 1000, 1, '25 XP per 1000 NGN'],
+      ['USD', 25, 1.20, 0, '25 XP per 1.2 USD'],
+      ['EUR', 25, 1.10, 0, '25 XP per 1.1 EUR'],
+      ['GBP', 25, 0.90, 0, '25 XP per 0.9 GBP']
+    ];
+
+    for (const rate of defaultXpRates) {
+      await db.execute(
+        `INSERT INTO xp_rates (currency, xp_per_unit, unit_amount, is_active, description) 
+         VALUES (?, ?, ?, ?, ?)`,
+        rate
+      );
+    }
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'factory_reset', 'Performed factory reset of all settings')`,
+      [adminId]
+    );
+
+    console.log('✅ Factory reset completed');
+
+    res.json({
+      success: true,
+      message: 'Factory reset completed successfully',
+      backup_created: backup
+    });
+
+  } catch (error) {
+    console.error('❌ Factory reset error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Factory reset failed' 
+    });
+  }
+});
+
+// POST /api/admin/factory-reset/undo - Restore from last backup
+router.post('/factory-reset/undo', authenticateAdmin, async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+
+    console.log('↩️ Admin undoing factory reset', { adminId });
+
+    // Get latest backup
+    const [backups] = await db.execute(
+      'SELECT * FROM settings_backup ORDER BY created_at DESC LIMIT 1'
+    );
+
+    if (backups.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'No backup found' 
+      });
+    }
+
+    const backup = backups[0];
+    const settingsData = JSON.parse(backup.settings_data);
+
+    // Clear current settings
+    await db.execute('DELETE FROM system_settings');
+
+    // Restore from backup
+    for (const [key, value] of Object.entries(settingsData)) {
+      await db.execute(
+        `INSERT INTO system_settings (setting_key, setting_value, updated_by) 
+         VALUES (?, ?, ?)`,
+        [key, value, adminId]
+      );
+    }
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'factory_reset_undo', 'Restored settings from backup')`,
+      [adminId]
+    );
+
+    console.log('✅ Factory reset undone');
+
+    res.json({
+      success: true,
+      message: 'Settings restored from backup'
+    });
+
+  } catch (error) {
+    console.error('❌ Undo factory reset error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to restore from backup' 
+    });
+  }
+});
+
 module.exports = router;

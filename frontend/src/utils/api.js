@@ -1480,6 +1480,42 @@ const adminAPI = {
     console.log(`🛠️ AdminAPI: Fetching system health`);
     return await adminApi.get(`/admin/maintenance/health`);
   },
+  getGames: async (category = '', is_active = '', search = '') => {
+    console.log(`🎮 AdminAPI: Fetching games - Category: ${category}, Active: ${is_active}, Search: ${search}`);
+    const params = new URLSearchParams();
+    if (category) params.append('category', category);
+    if (is_active !== '') params.append('is_active', is_active);
+    if (search) params.append('search', search);
+    return await adminApi.get(`/admin/games?${params}`);
+  },
+  
+  addGame: async (gameData) => {
+    console.log('🎮 AdminAPI: Adding new game');
+    return await adminApi.post('/admin/games', gameData);
+  },
+  
+  updateGame: async (id, gameData) => {
+    console.log(`🎮 AdminAPI: Updating game ${id}`);
+    return await adminApi.put(`/admin/games/${id}`, gameData);
+  },
+  
+  deleteGame: async (id) => {
+    console.log(`🎮 AdminAPI: Deleting game ${id}`);
+    return await adminApi.delete(`/admin/games/${id}`);
+  },
+  
+  // Broadcast Message
+  broadcastMessage: async (message) => {
+    console.log('📢 AdminAPI: Broadcasting message');
+    return await adminApi.post('/admin/broadcast-message', { message });
+  },
+  
+  // System Health
+  getSystemHealth: async () => {
+    console.log('🔧 AdminAPI: Fetching system health');
+    return await adminApi.get('/admin/maintenance/health');
+  },
+
   
   // Logout admin (client-side only)
   logout: () => {

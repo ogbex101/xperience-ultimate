@@ -40,7 +40,7 @@ const AdminLayout = () => {
     { name: 'Transactions', path: '/admin/transactions', icon: <CreditCard className="w-5 h-5" /> },
     { name: 'Matches', path: '/admin/matches', icon: <Swords className="w-5 h-5" /> },
     { name: 'Tournaments', path: '/admin/tournaments', icon: <Trophy className="w-5 h-5" /> },
-    { name: 'System Settings', path: '/admin/settings', icon: <Settings className="w-5 h-5" /> },
+    { name: 'System Settings', path: '/admin/system-settings', icon: <Settings className="w-5 h-5" /> },
     { name: 'Fraud Detection', path: '/admin/fraud', icon: <ShieldAlert className="w-5 h-5" /> },
     { name: 'Groups', path: '/admin/groups', icon: <UsersGroup className="w-5 h-5" /> },
     { name: 'Reports & Analytics', path: '/admin/reports', icon: <BarChart3 className="w-5 h-5" /> },
