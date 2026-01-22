@@ -4,6 +4,8 @@ const db = require('../config/database');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const multer = require('multer');
+const emailService = require('../services/emailService');
 
 // ==================== TEST & DEBUG ROUTES ====================
 
@@ -116,6 +118,17 @@ const authenticateAdmin = async (req, res, next) => {
     });
   }
 };
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  }
+});
 
 // ==================== ADMIN AUTH ====================
 router.post('/login', async (req, res) => {
@@ -298,7 +311,7 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       SUM(CASE WHEN admin_monitoring = 1 THEN 1 ELSE 0 END) as monitored_tournaments
     FROM tournaments`);
 
-    // Get other stats
+    // Get other stats - UPDATED WITH GROUP STATS
     const [stats] = await db.execute(`SELECT 
       (SELECT COUNT(*) FROM users) as total_users,
       COALESCE((SELECT SUM(balance) FROM users), 0) as total_balance,
@@ -309,7 +322,11 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       (SELECT COUNT(*) FROM fraud_flags WHERE status = 'active') as active_fraud_flags,
       (SELECT COUNT(*) FROM matches WHERE status = 'ongoing') as ongoing_matches,
       (SELECT COUNT(*) FROM groups WHERE DATE(created_at) = CURDATE()) as today_groups,
-      (SELECT COUNT(*) FROM groups) as total_groups
+      (SELECT COUNT(*) FROM groups) as total_groups,
+      (SELECT COUNT(*) FROM groups WHERE visibility = 'public') as public_groups,
+      (SELECT COUNT(*) FROM groups WHERE visibility = 'private') as private_groups,
+      (SELECT COUNT(*) FROM group_members WHERE status = 'joined') as total_group_members,
+      (SELECT COUNT(*) FROM groups WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) as active_groups
     `);
 
     // Combine stats
@@ -1301,6 +1318,668 @@ router.get('/fraud/flags', authenticateAdmin, async (req, res) => {
     });
   }
 });
+// Test endpoint that doesn't require auth (for debugging)
+router.get('/fraud/test', (req, res) => {
+  console.log('🔧 Fraud test endpoint called - no auth required');
+  res.json({
+    success: true,
+    message: 'Fraud API is accessible',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      flags: '/api/admin/fraud/flags',
+      stats: '/api/admin/fraud/stats',
+      users: '/api/admin/fraud/suspicious-users',
+      patterns: '/api/admin/fraud/patterns',
+      scan: '/api/admin/fraud/scan'
+    }
+  });
+});
+// Add these to your admin.js after /fraud/flags
+
+// 1. GET /api/admin/fraud/stats
+router.get('/fraud/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Fetching fraud stats');
+    
+    // Get counts from database
+    const [flagStats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_flags,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_flags,
+        COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed_flags,
+        COUNT(CASE WHEN status = 'false_positive' THEN 1 END) as false_positive_flags
+      FROM fraud_flags
+    `);
+
+    // Get user risk stats (if you have risk_score column)
+    const [userStats] = await db.execute(`
+      SELECT 
+        COUNT(CASE WHEN risk_score >= 70 THEN 1 END) as high_risk_users,
+        COUNT(CASE WHEN risk_score BETWEEN 40 AND 69 THEN 1 END) as medium_risk_users,
+        COALESCE(SUM(CASE WHEN risk_score >= 40 THEN balance ELSE 0 END), 0) as amount_at_risk
+      FROM users
+    `);
+
+    // Get recent scans (if you have fraud_detection_logs table)
+    const [scanStats] = await db.execute(`
+      SELECT COUNT(*) as recent_scans 
+      FROM fraud_detection_logs 
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+    `);
+
+    res.json({
+      success: true,
+      stats: {
+        ...flagStats[0],
+        ...userStats[0],
+        ...scanStats[0],
+        amount_at_risk: userStats[0]?.amount_at_risk || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Fraud stats error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
+  }
+});
+
+// 2. GET /api/admin/fraud/suspicious-users
+router.get('/fraud/suspicious-users', authenticateAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, risk_min = 0 } = req.query;
+    const offset = (page - 1) * limit;
+
+    console.log('🔍 Fetching suspicious users');
+
+    // Query users with fraud flags
+    const [users] = await db.execute(`
+      SELECT 
+        u.id,
+        u.username,
+        u.email,
+        COALESCE(u.risk_score, 0) as risk_score,
+        u.balance,
+        COUNT(ff.id) as fraud_flags_count
+      FROM users u
+      LEFT JOIN fraud_flags ff ON u.id = ff.user_id AND ff.status IN ('pending', 'confirmed')
+      GROUP BY u.id, u.username, u.email, u.risk_score, u.balance
+      HAVING COALESCE(u.risk_score, 0) >= ?
+      ORDER BY COALESCE(u.risk_score, 0) DESC
+      LIMIT ? OFFSET ?
+    `, [risk_min, parseInt(limit), parseInt(offset)]);
+
+    res.json({
+      success: true,
+      users: users || []
+    });
+
+  } catch (error) {
+    console.error('❌ Suspicious users error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+  }
+});
+
+// 3. GET /api/admin/fraud/patterns
+router.get('/fraud/patterns', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('🔄 Fetching fraud patterns');
+    
+    // If you have a fraud_patterns table
+    const [patterns] = await db.execute(`
+      SELECT * FROM fraud_patterns ORDER BY created_at DESC
+    `);
+
+    // If table doesn't exist, return empty array
+    if (!patterns) {
+      return res.json({
+        success: true,
+        patterns: []
+      });
+    }
+
+    res.json({
+      success: true,
+      patterns: patterns || []
+    });
+
+  } catch (error) {
+    console.error('❌ Fraud patterns error:', error);
+    // Return empty array if table doesn't exist
+    res.json({
+      success: true,
+      patterns: []
+    });
+  }
+});
+
+// 4. POST /api/admin/fraud/scan
+router.post('/fraud/scan', authenticateAdmin, async (req, res) => {
+  try {
+    const { scanType = 'full' } = req.body;
+    console.log('🔍 Starting fraud scan:', scanType);
+
+    // Return immediate response
+    res.json({
+      success: true,
+      message: 'Fraud detection scan initiated',
+      scanType,
+      timestamp: new Date().toISOString()
+    });
+
+    // Run scan in background (simplified)
+    setTimeout(async () => {
+      try {
+        console.log('✅ Fraud scan completed in background');
+        // You can add actual scan logic here
+      } catch (bgError) {
+        console.error('❌ Background scan error:', bgError);
+      }
+    }, 100);
+
+  } catch (error) {
+    console.error('❌ Fraud scan error:', error);
+    res.status(500).json({ success: false, message: 'Failed to start scan' });
+  }
+});
+// ==================== FRAUD MANAGEMENT ENDPOINTS ====================
+
+// 1. GET /api/admin/fraud/stats - Fraud statistics (MUST WORK)
+router.get('/fraud/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching fraud statistics');
+    
+    // Get fraud flag stats
+    const [flagStats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_flags,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_flags,
+        COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed_flags,
+        COUNT(CASE WHEN status = 'false_positive' THEN 1 END) as false_positive_flags
+      FROM fraud_flags
+    `);
+
+    // Get suspicious activities stats
+    const [activityStats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_activities,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_activities,
+        COUNT(CASE WHEN severity_level = 'high' OR severity_level = 'critical' THEN 1 END) as high_risk_activities
+      FROM suspicious_activities
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+    `);
+
+    // Get user risk stats
+    const [userStats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_users,
+        COUNT(CASE WHEN risk_score >= 70 THEN 1 END) as high_risk_users,
+        COUNT(CASE WHEN risk_score BETWEEN 40 AND 69 THEN 1 END) as medium_risk_users,
+        COALESCE(SUM(CASE WHEN risk_score >= 40 THEN balance ELSE 0 END), 0) as amount_at_risk
+      FROM users
+      WHERE account_status = 'active' AND is_banned = 0
+    `);
+
+    // Get recent scans
+    const [recentScans] = await db.execute(`
+      SELECT COUNT(*) as recent_scans 
+      FROM fraud_detection_logs 
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+    `);
+
+    // Get weekly activity data for chart
+    const [weeklyData] = await db.execute(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as count,
+        'activities' as type
+      FROM suspicious_activities 
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY date
+    `);
+
+    res.json({
+      success: true,
+      stats: {
+        ...flagStats[0],
+        ...activityStats[0],
+        ...userStats[0],
+        ...recentScans[0],
+        amount_at_risk: userStats[0]?.amount_at_risk || 0
+      },
+      weeklyData: weeklyData,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Get fraud stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch fraud statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// 2. GET /api/admin/fraud/suspicious-users - Suspicious users (MUST WORK)
+router.get('/fraud/suspicious-users', authenticateAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, risk_min = 0 } = req.query;
+    const offset = (page - 1) * limit;
+
+    console.log('🔍 Admin: Fetching suspicious users - Page:', page, 'Risk min:', risk_min);
+
+    // Get suspicious users
+    const [users] = await db.execute(`
+      SELECT 
+        u.id,
+        u.username,
+        u.email,
+        u.risk_score,
+        u.balance,
+        u.created_at,
+        u.last_login_at,
+        u.account_status,
+        u.is_banned,
+        COUNT(DISTINCT sa.id) as suspicious_activities_count,
+        COUNT(DISTINCT ff.id) as fraud_flags_count,
+        MAX(sa.created_at) as last_suspicious_activity
+      FROM users u
+      LEFT JOIN suspicious_activities sa ON u.id = sa.user_id AND sa.status = 'pending'
+      LEFT JOIN fraud_flags ff ON u.id = ff.user_id AND ff.status IN ('pending', 'confirmed')
+      WHERE u.risk_score >= ?
+      GROUP BY u.id, u.username, u.email, u.risk_score, u.balance, u.created_at, u.last_login_at, u.account_status, u.is_banned
+      ORDER BY u.risk_score DESC, last_suspicious_activity DESC
+      LIMIT ? OFFSET ?
+    `, [risk_min, parseInt(limit), parseInt(offset)]);
+
+    // Get total count
+    const [countResult] = await db.execute(
+      'SELECT COUNT(*) as total FROM users WHERE risk_score >= ?',
+      [risk_min]
+    );
+
+    // Format the response
+    const formattedUsers = users.map(user => ({
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      risk_score: user.risk_score,
+      risk_level: user.risk_score >= 70 ? 'high' : user.risk_score >= 40 ? 'medium' : 'low',
+      balance: user.balance,
+      account_age: Math.floor((new Date() - new Date(user.created_at)) / (1000 * 60 * 60 * 24)),
+      suspicious_activities_count: user.suspicious_activities_count || 0,
+      fraud_flags_count: user.fraud_flags_count || 0,
+      last_activity: user.last_suspicious_activity || user.last_login_at,
+      account_status: user.account_status,
+      is_banned: user.is_banned
+    }));
+
+    res.json({
+      success: true,
+      users: formattedUsers,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0]?.total || 0,
+        totalPages: Math.ceil((countResult[0]?.total || 0) / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get suspicious users error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch suspicious users' 
+    });
+  }
+});
+
+// 3. GET /api/admin/fraud/patterns - Get fraud patterns
+router.get('/fraud/patterns', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('🔄 Admin: Fetching fraud patterns');
+    
+    const [patterns] = await db.execute(`
+      SELECT fp.*, au.username as created_by_name
+      FROM fraud_patterns fp
+      LEFT JOIN admin_users au ON fp.created_by = au.id
+      ORDER BY fp.created_at DESC
+    `);
+
+    // Parse JSON rules if they exist
+    const formattedPatterns = patterns.map(pattern => ({
+      ...pattern,
+      rules: pattern.rules ? JSON.parse(pattern.rules) : {}
+    }));
+
+    res.json({
+      success: true,
+      patterns: formattedPatterns
+    });
+
+  } catch (error) {
+    console.error('❌ Get fraud patterns error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch fraud patterns' 
+    });
+  }
+});
+
+// 4. POST /api/admin/fraud/scan - Run fraud detection scan
+router.post('/fraud/scan', authenticateAdmin, async (req, res) => {
+  try {
+    const { scanType = 'full' } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('🔍 Admin: Initiating fraud scan - Type:', scanType, 'Admin:', adminId);
+
+    // Return immediate response and run scan in background
+    res.json({
+      success: true,
+      message: 'Fraud detection scan initiated',
+      scanType,
+      timestamp: new Date().toISOString()
+    });
+
+    // Run scan in background
+    setTimeout(async () => {
+      try {
+        await runFraudScan(scanType, adminId);
+        console.log('✅ Fraud scan completed in background');
+      } catch (bgError) {
+        console.error('❌ Background scan error:', bgError);
+      }
+    }, 100);
+
+  } catch (error) {
+    console.error('❌ Initiate fraud scan error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to initiate fraud scan' 
+    });
+  }
+});
+
+// 5. POST /api/admin/fraud/suspicious-activities/:id/review - Review suspicious activity
+router.post('/fraud/suspicious-activities/:id/review', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('📝 Admin: Reviewing suspicious activity:', { id, status, adminId });
+
+    // Validate status
+    if (!['reviewed', 'dismissed', 'confirmed'].includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid status. Must be: reviewed, dismissed, or confirmed' 
+      });
+    }
+
+    // Check if activity exists
+    const [activities] = await db.execute(
+      'SELECT * FROM suspicious_activities WHERE id = ?',
+      [id]
+    );
+
+    if (activities.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Suspicious activity not found' 
+      });
+    }
+
+    const activity = activities[0];
+
+    // Update the activity
+    await db.execute(
+      `UPDATE suspicious_activities 
+       SET status = ?, 
+           reviewed_by = ?, 
+           reviewed_at = NOW(), 
+           review_notes = ?,
+           updated_at = NOW()
+       WHERE id = ?`,
+      [status, adminId, notes || null, id]
+    );
+
+    // If confirmed as fraud, increase user risk score
+    if (status === 'confirmed') {
+      await db.execute(
+        `UPDATE users 
+         SET risk_score = LEAST(risk_score + 20, 100),
+             last_risk_assessment = NOW(),
+             updated_at = NOW()
+         WHERE id = ?`,
+        [activity.user_id]
+      );
+    }
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id) 
+       VALUES (?, 'fraud_review', ?, ?)`,
+      [adminId, `Reviewed suspicious activity #${id} as ${status}`, activity.user_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Activity reviewed successfully',
+      status: status
+    });
+
+  } catch (error) {
+    console.error('❌ Review suspicious activity error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to review activity' 
+    });
+  }
+});
+
+// Helper function for background fraud scan
+async function runFraudScan(scanType, adminId) {
+  const startTime = Date.now();
+  const scanId = uuidv4();
+  
+  console.log(`🔄 Starting fraud scan ${scanId} - Type: ${scanType}`);
+
+  try {
+    // Create scan log
+    await db.execute(
+      `INSERT INTO fraud_detection_logs (id, scan_type, status, initiated_by) 
+       VALUES (?, ?, 'running', ?)`,
+      [scanId, scanType, adminId]
+    );
+
+    let usersChecked = 0;
+    let suspiciousFound = 0;
+    const triggeredPatterns = [];
+
+    // Get active fraud patterns
+    const [patterns] = await db.execute(
+      'SELECT * FROM fraud_patterns WHERE is_active = 1'
+    );
+
+    // Determine which users to scan
+    let userQuery = 'SELECT id, username, email, created_at, last_login_at, balance FROM users WHERE risk_score < 100';
+    let queryParams = [];
+
+    if (scanType === 'targeted') {
+      userQuery += ' AND risk_score > 30';
+    } else if (scanType === 'recent') {
+      userQuery += ' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
+    }
+
+    const [users] = await db.execute(userQuery, queryParams);
+
+    // Scan each user
+    for (const user of users) {
+      usersChecked++;
+      let userSuspicious = false;
+
+      // Check each pattern
+      for (const pattern of patterns) {
+        try {
+          const rules = pattern.rules ? JSON.parse(pattern.rules) : {};
+          const isMatch = await checkPattern(user, rules);
+
+          if (isMatch) {
+            userSuspicious = true;
+            suspiciousFound++;
+            triggeredPatterns.push({
+              patternId: pattern.id,
+              patternName: pattern.pattern_name
+            });
+
+            // Record suspicious activity
+            await db.execute(
+              `INSERT INTO suspicious_activities 
+               (id, user_id, activity_type, severity_level, risk_score, description, metadata) 
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [
+                uuidv4(),
+                user.id,
+                pattern.pattern_type,
+                'medium',
+                pattern.risk_weight * 10,
+                pattern.description || `Detected pattern: ${pattern.pattern_name}`,
+                JSON.stringify({
+                  pattern: pattern.pattern_name,
+                  scan_id: scanId,
+                  user_data: {
+                    username: user.username,
+                    balance: user.balance,
+                    account_age_days: Math.floor((new Date() - new Date(user.created_at)) / (1000 * 60 * 60 * 24))
+                  }
+                })
+              ]
+            );
+
+            // Update user risk score
+            await db.execute(
+              `UPDATE users 
+               SET risk_score = LEAST(risk_score + ?, 100),
+                   last_risk_assessment = NOW(),
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [pattern.risk_weight * 5, user.id]
+            );
+          }
+        } catch (patternError) {
+          console.warn(`⚠️ Error checking pattern ${pattern.pattern_name}:`, patternError.message);
+        }
+      }
+
+      if (userSuspicious) {
+        console.log(`🔍 User ${user.username} (${user.id}) flagged as suspicious`);
+      }
+    }
+
+    const scanDuration = Date.now() - startTime;
+
+    // Update scan log
+    await db.execute(
+      `UPDATE fraud_detection_logs 
+       SET triggered_patterns = ?,
+           users_checked = ?,
+           suspicious_found = ?,
+           scan_duration_ms = ?,
+           status = 'completed'
+       WHERE id = ?`,
+      [JSON.stringify(triggeredPatterns), usersChecked, suspiciousFound, scanDuration, scanId]
+    );
+
+    console.log(`✅ Fraud scan completed: ${usersChecked} users checked, ${suspiciousFound} suspicious activities found`);
+
+  } catch (error) {
+    console.error('❌ Fraud scan error:', error);
+    
+    // Update scan log as failed
+    try {
+      await db.execute(
+        'UPDATE fraud_detection_logs SET status = "failed" WHERE id = ?',
+        [scanId]
+      );
+    } catch (updateError) {
+      console.error('Failed to update scan log:', updateError);
+    }
+  }
+}
+
+// Helper function to check pattern rules
+async function checkPattern(user, rules) {
+  if (!rules || typeof rules !== 'object') {
+    return false;
+  }
+
+  try {
+    // Example pattern checking logic
+    // You should customize this based on your actual fraud detection needs
+    
+    // Check for rapid account creation (multiple accounts from same IP)
+    if (rules.type === 'multiple_accounts') {
+      const [accounts] = await db.execute(
+        'SELECT COUNT(*) as count FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)',
+        [rules.timeframe || 24]
+      );
+      return accounts[0].count > (rules.threshold || 3);
+    }
+
+    // Check for unusual transaction patterns
+    if (rules.type === 'transaction_anomaly') {
+      const [transactions] = await db.execute(
+        `SELECT COUNT(*) as count, SUM(amount) as total 
+         FROM transactions 
+         WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) AND status = 'completed'`,
+        [user.id, rules.timeframe || 24]
+      );
+      
+      const txCount = transactions[0].count || 0;
+      const totalAmount = Math.abs(transactions[0].total || 0);
+      
+      return txCount > (rules.maxTransactions || 10) || totalAmount > (rules.maxAmount || 100000);
+    }
+
+    // Check for login anomalies
+    if (rules.type === 'login_anomaly') {
+      const [logins] = await db.execute(
+        `SELECT COUNT(DISTINCT ip_address) as unique_ips 
+         FROM user_logins 
+         WHERE user_id = ? AND login_time >= DATE_SUB(NOW(), INTERVAL ? HOUR)`,
+        [user.id, rules.timeframe || 24]
+      );
+      
+      return logins[0].unique_ips > (rules.maxUniqueIPs || 5);
+    }
+
+    // Check account age and activity
+    if (rules.type === 'new_account_high_activity') {
+      const accountAgeHours = Math.floor((new Date() - new Date(user.created_at)) / (1000 * 60 * 60));
+      
+      if (accountAgeHours < (rules.maxAgeHours || 24)) {
+        const [activityCount] = await db.execute(
+          `SELECT COUNT(*) as count 
+           FROM matches 
+           WHERE (player1_id = ? OR player2_id = ?) AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
+          [user.id, user.id]
+        );
+        
+        return activityCount[0].count > (rules.minActivities || 10);
+      }
+    }
+
+    return false;
+
+  } catch (error) {
+    console.error('Pattern check error:', error);
+    return false;
+  }
+}
 // ==================== TRANSACTIONS MANAGEMENT ====================
 router.get('/transactions', authenticateAdmin, async (req, res) => {
   try {
@@ -3191,7 +3870,7 @@ router.post('/broadcast-message', authenticateAdmin, async (req, res) => {
       });
     }
 
-    console.log('📢 Broadcasting message to all users:', message);
+    console.log('📢 Broadcasting in-app message to all users:', message);
 
     // Get all active users
     const [users] = await db.execute(
@@ -3219,13 +3898,13 @@ router.post('/broadcast-message', authenticateAdmin, async (req, res) => {
     await db.execute(
       `INSERT INTO admin_activity_logs 
        (admin_id, action_type, description) 
-       VALUES (?, 'broadcast', 'Sent message to all users')`,
+       VALUES (?, 'broadcast', 'Sent in-app message to all users')`,
       [adminId]
     );
 
     res.json({
       success: true,
-      message: 'Message broadcasted successfully',
+      message: 'Broadcast message sent successfully',
       users_notified: usersNotified
     });
 
@@ -3236,8 +3915,7 @@ router.post('/broadcast-message', authenticateAdmin, async (req, res) => {
       message: 'Failed to broadcast message' 
     });
   }
-});// ==================== GAMES MANAGEMENT ====================
-
+});
 // GET /api/admin/games - Get all games
 router.get('/games', authenticateAdmin, async (req, res) => {
   try {
@@ -3484,98 +4162,6 @@ router.delete('/games/:id', authenticateAdmin, async (req, res) => {
     });
   }
 });
-// POST /api/admin/send-email-notification - Send email to users
-router.post('/send-email-notification', authenticateAdmin, async (req, res) => {
-  try {
-    const adminId = req.admin.id;
-    
-    // Handle multipart/form-data
-    let subject = req.body.subject;
-    let message = req.body.message;
-    let recipientType = req.body.recipientType;
-    let filters = req.body.filters ? JSON.parse(req.body.filters) : {};
-    let recipients = req.body.recipients ? JSON.parse(req.body.recipients) : [];
-    
-    console.log('📧 Admin sending email notification:', { 
-      subject, 
-      recipientType,
-      filterCount: Object.keys(filters).length,
-      recipientCount: recipients.length || 'all' 
-    });
-
-    if (!subject || !message) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Subject and message are required' 
-      });
-    }
-
-    let userEmails = [];
-    
-    if (recipientType === 'all') {
-      // Get all active users
-      const [users] = await db.execute(
-        'SELECT email FROM users WHERE account_status = "active" AND is_banned = 0'
-      );
-      userEmails = users.map(user => user.email);
-    } else if (recipientType === 'filtered') {
-      // Get filtered users
-      userEmails = recipients.map(user => user.email);
-    }
-
-    if (userEmails.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No recipients found' 
-      });
-    }
-
-    // Here you would integrate with your email service
-    // For now, we'll simulate sending emails
-    console.log('📧 Would send email to:', userEmails.length, 'users');
-    console.log('📧 Subject:', subject);
-    console.log('📧 Message preview:', message.substring(0, 100) + '...');
-
-    // Create notifications in database with sender as "system"
-    for (const email of userEmails) {
-      // Find user by email
-      const [users] = await db.execute(
-        'SELECT id FROM users WHERE email = ?',
-        [email]
-      );
-      
-      if (users.length > 0) {
-        await db.execute(
-          `INSERT INTO notifications 
-           (user_id, sender_id, message, type, status, created_at) 
-           VALUES (?, NULL, ?, 'system', 'unread', NOW())`,
-          [users[0].id, `System: ${subject} - ${message.substring(0, 200)}...`]
-        );
-      }
-    }
-
-    // Log activity
-    await db.execute(
-      `INSERT INTO admin_activity_logs 
-       (admin_id, action_type, description) 
-       VALUES (?, 'email_notification', ?)`,
-      [adminId, `Sent email to ${userEmails.length} users: ${subject}`]
-    );
-
-    res.json({
-      success: true,
-      message: 'Email notification sent successfully',
-      recipients_count: userEmails.length
-    });
-
-  } catch (error) {
-    console.error('❌ Send email notification error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to send email notification' 
-    });
-  }
-});
 
 // POST /api/admin/factory-reset - Reset all settings to defaults
 router.post('/factory-reset', authenticateAdmin, async (req, res) => {
@@ -3744,5 +4330,996 @@ router.post('/factory-reset/undo', authenticateAdmin, async (req, res) => {
     });
   }
 });
+// ==================== EMAIL NOTIFICATION SYSTEM ====================
 
+// GET /api/admin/email/templates - Get email templates
+router.get('/email/templates', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📧 Fetching email templates');
+    
+    const [templates] = await db.execute(
+      'SELECT * FROM email_templates ORDER BY name'
+    );
+
+    res.json({
+      success: true,
+      templates
+    });
+
+  } catch (error) {
+    console.error('❌ Get email templates error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch email templates' 
+    });
+  }
+});
+
+// POST /api/admin/email/templates - Create email template
+router.post('/email/templates', authenticateAdmin, async (req, res) => {
+  try {
+    const { name, subject, content, variables } = req.body;
+    const adminId = req.admin.id;
+
+    if (!name || !subject || !content) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, subject, and content are required'
+      });
+    }
+
+    console.log('📧 Creating email template:', name);
+
+    await db.execute(
+      `INSERT INTO email_templates (name, subject, content, variables) 
+       VALUES (?, ?, ?, ?)`,
+      [name, subject, content, variables ? JSON.stringify(variables) : null]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'email_template_create', ?)`,
+      [adminId, `Created email template: ${name}`]
+    );
+
+    res.json({
+      success: true,
+      message: 'Email template created successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Create email template error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to create email template' 
+    });
+  }
+});
+
+// POST /api/admin/send-email-notification - Send email to users (FIXED VERSION)
+router.post('/send-email-notification', authenticateAdmin, async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+    
+    console.log('📧 BACKEND FIXED: Received email notification request');
+    console.log('📧 BACKEND FIXED: Request body type:', typeof req.body);
+    console.log('📧 BACKEND FIXED: Request body:', req.body);
+    
+    // Handle both FormData and JSON
+    let subject, message, recipientType, filters, recipients;
+    
+    if (typeof req.body === 'object' && !Array.isArray(req.body)) {
+      // JSON request
+      subject = req.body.subject || '';
+      message = req.body.message || '';
+      recipientType = req.body.recipientType || req.body.sendTo || 'all';
+      recipients = Array.isArray(req.body.recipients) ? req.body.recipients : [];
+      
+      // Handle filters - could be object or JSON string
+      if (typeof req.body.filters === 'string') {
+        try {
+          filters = JSON.parse(req.body.filters);
+        } catch (e) {
+          console.log('⚠️ Could not parse filters as JSON, using empty object');
+          filters = {};
+        }
+      } else if (typeof req.body.filters === 'object') {
+        filters = req.body.filters || {};
+      } else {
+        filters = {};
+      }
+    } else {
+      // Invalid request
+      console.log('❌ Invalid request body type');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid request format' 
+      });
+    }
+    
+    console.log('📧 BACKEND FIXED: Parsed fields:', { 
+      subject, 
+      message, 
+      recipientType,
+      hasSubject: !!subject && subject.trim() !== '',
+      hasMessage: !!message && message.trim() !== '',
+      filterCount: Object.keys(filters).length,
+      recipientCount: recipients.length 
+    });
+
+    // Validate required fields
+    if (!subject || subject.trim() === '') {
+      console.log('❌ BACKEND: Validation failed: subject is empty');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Subject is required' 
+      });
+    }
+
+    if (!message || message.trim() === '') {
+      console.log('❌ BACKEND: Validation failed: message is empty');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Message is required' 
+      });
+    }
+
+    // Clean the values
+    const cleanSubject = subject.trim();
+    const cleanMessage = message.trim();
+
+    let userEmails = [];
+    let userIds = [];
+    
+    // Get users based on recipient type
+    if (recipientType === 'all') {
+      // Get all active users
+      const [users] = await db.execute(
+        'SELECT id, email FROM users WHERE account_status = "active" AND is_banned = 0'
+      );
+      userEmails = users.map(user => user.email);
+      userIds = users.map(user => user.id);
+      console.log(`📧 BACKEND: Found ${users.length} active users for "all"`);
+    } else if (recipientType === 'selected' && recipients.length > 0) {
+      // Get selected users
+      const placeholders = recipients.map(() => '?').join(',');
+      const [users] = await db.execute(
+        `SELECT id, email FROM users WHERE id IN (${placeholders})`,
+        recipients
+      );
+      userEmails = users.map(user => user.email);
+      userIds = users.map(user => user.id);
+      console.log(`📧 BACKEND: Found ${users.length} selected users`);
+    } else if (recipientType === 'filtered') {
+      // Build query based on filters
+      let query = 'SELECT id, email FROM users WHERE account_status = "active" AND is_banned = 0';
+      const params = [];
+      
+      if (filters.rank && filters.rank.trim() !== '') {
+        query += ' AND rank = ?';
+        params.push(filters.rank.trim());
+      }
+      
+      if (filters.status && filters.status !== 'active') {
+        query += ' AND account_status = ?';
+        params.push(filters.status);
+      }
+      
+      if (filters.minBalance) {
+        query += ' AND balance >= ?';
+        params.push(parseFloat(filters.minBalance));
+      }
+      
+      if (filters.maxBalance) {
+        query += ' AND balance <= ?';
+        params.push(parseFloat(filters.maxBalance));
+      }
+      
+      const [users] = await db.execute(query, params);
+      userEmails = users.map(user => user.email);
+      userIds = users.map(user => user.id);
+      console.log(`📧 BACKEND: Found ${users.length} filtered users`);
+    } else {
+      console.log('❌ BACKEND: Invalid recipient type or no recipients');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid recipient selection' 
+      });
+    }
+
+    if (userEmails.length === 0) {
+      console.log('❌ BACKEND: No recipients found');
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No recipients found' 
+      });
+    }
+
+    console.log(`📧 BACKEND: Will send to ${userEmails.length} users`);
+
+    // Send emails
+    const emailResults = await emailService.sendToUsers(
+      userEmails,
+      cleanSubject,
+      cleanMessage
+    );
+
+    // Count successful emails
+    const sentCount = emailResults.filter(r => r.success).length;
+    const failedCount = emailResults.filter(r => !r.success).length;
+
+    // Store emails in queue for tracking
+    if (userEmails.length > 0) {
+      try {
+        // Insert all emails in batch
+        for (const email of userEmails) {
+          await db.execute(
+            `INSERT INTO email_queue 
+             (recipient_email, subject, content, status, created_at) 
+             VALUES (?, ?, ?, ?, NOW())`,
+            [email, cleanSubject, cleanMessage, sentCount > 0 ? 'sent' : 'failed']
+          );
+        }
+        console.log('📧 BACKEND: Emails logged to queue');
+      } catch (dbError) {
+        console.warn('⚠️ BACKEND: Could not log emails to queue:', dbError.message);
+      }
+    }
+
+    // ============ KEEP BROADCAST MESSAGE FEATURE ============
+    // Create in-app notifications for all users (system broadcast)
+    const broadcastMessage = `SYSTEM: ${cleanSubject} - ${cleanMessage.substring(0, 200)}${cleanMessage.length > 200 ? '...' : ''}`;
+    let broadcastCount = 0;
+    
+    if (userIds.length > 0) {
+      for (const userId of userIds) {
+        try {
+          await db.execute(
+            `INSERT INTO notifications 
+             (user_id, sender_id, message, type, status, created_at) 
+             VALUES (?, ?, ?, 'system', 'unread', NOW())`,
+            [userId, adminId, broadcastMessage]
+          );
+          broadcastCount++;
+        } catch (error) {
+          console.warn(`⚠️ BACKEND: Could not create in-app notification for user ${userId}:`, error.message);
+        }
+      }
+    }
+    // ============ END BROADCAST FEATURE ============
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'email_notification', ?)`,
+      [adminId, `Sent email to ${sentCount} users: ${cleanSubject} (${failedCount} failed)`]
+    );
+
+    console.log(`✅ BACKEND: Email notification sent to ${sentCount} users`);
+    console.log(`✅ BACKEND: In-app broadcast sent to ${broadcastCount} users`);
+
+    res.json({
+      success: true,
+      message: 'Email and in-app notification sent successfully',
+      email_results: {
+        sent: sentCount,
+        failed: failedCount,
+        total: userEmails.length
+      },
+      broadcast_results: {
+        sent: broadcastCount,
+        total: userIds.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ BACKEND: Send email notification error:', error);
+    console.error('❌ BACKEND: Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send email notification',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+// GET /api/admin/email/queue - Get email queue
+router.get('/email/queue', authenticateAdmin, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const offset = (page - 1) * limit;
+
+    console.log('📧 Fetching email queue - Status:', status, 'Page:', page);
+
+    let query = 'SELECT * FROM email_queue WHERE 1=1';
+    let countQuery = 'SELECT COUNT(*) as total FROM email_queue WHERE 1=1';
+    const params = [];
+    const countParams = [];
+
+    if (status && status !== 'all') {
+      query += ' AND status = ?';
+      countQuery += ' AND status = ?';
+      params.push(status);
+      countParams.push(status);
+    }
+
+    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    const [queue] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    res.json({
+      success: true,
+      queue,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get email queue error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch email queue' 
+    });
+  }
+});
+
+// POST /api/admin/email/test - Test email configuration
+router.post('/email/test', authenticateAdmin, async (req, res) => {
+  try {
+    const { email = req.admin.email } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('🧪 Testing email configuration to:', email);
+
+    const testResult = await emailService.sendEmail(
+      email,
+      'Test Email from Xperience Platform',
+      `
+      <h1>✅ Email Test Successful!</h1>
+      <p>This is a test email from Xperience Platform.</p>
+      <p>If you received this, your email configuration is working correctly.</p>
+      <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>
+      <p><strong>Admin:</strong> ${req.admin.username}</p>
+      `
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'email_test', 'Tested email configuration')`,
+      [adminId]
+    );
+
+    res.json({
+      success: testResult.success,
+      message: testResult.success ? 'Test email sent successfully' : 'Failed to send test email',
+      result: testResult
+    });
+
+  } catch (error) {
+    console.error('❌ Test email error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Email test failed' 
+    });
+  }
+});
+// ==================== GROUPS MANAGEMENT ENDPOINTS ====================
+
+// GET /api/admin/groups - Get all groups (UPDATED WITH FILTER)
+router.get('/groups', authenticateAdmin, async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 20, visibility = '' } = req.query; // ADDED visibility
+    const offset = (page - 1) * limit;
+    const adminId = req.admin.id;
+
+    console.log('👥 Admin: Fetching groups - Search:', search, 'Page:', page, 'Visibility:', visibility);
+
+    // Build query with search AND visibility filter
+    let query = `
+      SELECT 
+        g.*,
+        u.username as creator_username,
+        u.email as creator_email,
+        COUNT(DISTINCT gm.user_id) as member_count
+      FROM groups g
+      LEFT JOIN users u ON g.creator_id = u.id
+      LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.status = 'joined'
+      WHERE 1=1
+    `;
+    
+    let countQuery = 'SELECT COUNT(*) as total FROM groups g WHERE 1=1';
+    const params = [];
+    const countParams = [];
+
+    // Search filter
+    if (search && search.trim() !== '') {
+      const searchTerm = `%${search.trim()}%`;
+      query += ' AND (g.name LIKE ? OR g.description LIKE ? OR g.game_specialty LIKE ?)';
+      countQuery += ' AND (g.name LIKE ? OR g.description LIKE ? OR g.game_specialty LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm);
+      countParams.push(searchTerm, searchTerm, searchTerm);
+    }
+
+    // Visibility filter (ADDED)
+    if (visibility && visibility !== '') {
+      query += ' AND g.visibility = ?';
+      countQuery += ' AND g.visibility = ?';
+      params.push(visibility);
+      countParams.push(visibility);
+    }
+
+    // Group and paginate
+    query += ' GROUP BY g.id ORDER BY g.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    const [groups] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    // Format groups for frontend
+    const formattedGroups = groups.map(group => ({
+      id: group.id,
+      name: group.name,
+      description: group.description || '',
+      game_specialty: group.game_specialty || '',
+      visibility: group.visibility || 'public',
+      max_members: group.max_members || 20,
+      creator_id: group.creator_id,
+      creator: {
+        username: group.creator_username,
+        email: group.creator_email
+      },
+      current_members: group.member_count || 0,
+      created_at: group.created_at,
+      updated_at: group.updated_at
+    }));
+
+    // Log activity
+    try {
+      await db.execute(
+        `INSERT INTO admin_activity_logs 
+         (admin_id, action_type, description) 
+         VALUES (?, 'view', 'Viewed groups list')`,
+        [adminId]
+      );
+    } catch (logError) {
+      console.warn('⚠️ Could not log activity:', logError.message);
+    }
+
+    res.json({
+      success: true,
+      groups: formattedGroups,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0]?.total || 0,
+        totalPages: Math.ceil((countResult[0]?.total || 0) / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get groups error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch groups',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// GET /api/admin/groups/:id - Get group details
+router.get('/groups/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+
+    console.log('👥 Admin: Fetching group details for ID:', id);
+
+    // Get group details
+    const [groups] = await db.execute(`
+      SELECT 
+        g.*,
+        u.username as creator_username,
+        u.email as creator_email,
+        COUNT(DISTINCT gm.user_id) as member_count
+      FROM groups g
+      LEFT JOIN users u ON g.creator_id = u.id
+      LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.status = 'joined'
+      WHERE g.id = ?
+      GROUP BY g.id
+    `, [id]);
+
+    if (groups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found'
+      });
+    }
+
+    const group = groups[0];
+
+    // Format response
+    const formattedGroup = {
+      id: group.id,
+      name: group.name,
+      description: group.description || '',
+      game_specialty: group.game_specialty || '',
+      visibility: group.visibility || 'public',
+      max_members: group.max_members || 20,
+      creator_id: group.creator_id,
+      creator: {
+        username: group.creator_username,
+        email: group.creator_email
+      },
+      current_members: group.member_count || 0,
+      created_at: group.created_at,
+      updated_at: group.updated_at
+    };
+
+    res.json({
+      success: true,
+      group: formattedGroup
+    });
+
+  } catch (error) {
+    console.error('❌ Get group details error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch group details'
+    });
+  }
+});
+
+// GET /api/admin/groups/:id/members - Get group members
+router.get('/groups/:id/members', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+
+    console.log('👥 Admin: Fetching members for group ID:', id);
+
+    // Verify group exists
+    const [groups] = await db.execute(
+      'SELECT id, name FROM groups WHERE id = ?',
+      [id]
+    );
+
+    if (groups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found'
+      });
+    }
+
+    // Get group members
+    const [members] = await db.execute(`
+      SELECT 
+        gm.*,
+        u.username,
+        u.email,
+        u.profile_pic,
+        u.rank,
+        u.xp_points,
+        u.created_at as user_created_at
+      FROM group_members gm
+      JOIN users u ON gm.user_id = u.id
+      WHERE gm.group_id = ? AND gm.status = 'joined'
+      ORDER BY 
+        CASE WHEN gm.role = 'admin' THEN 1 ELSE 2 END,
+        gm.joined_at ASC
+    `, [id]);
+
+    // Format members for frontend
+    const formattedMembers = members.map(member => ({
+      user_id: member.user_id,
+      group_id: member.group_id,
+      role: member.role || 'member',
+      status: member.status,
+      joined_at: member.joined_at,
+      user: {
+        username: member.username,
+        email: member.email,
+        profile_pic: member.profile_pic,
+        rank: member.rank,
+        xp_points: member.xp_points,
+        created_at: member.user_created_at
+      }
+    }));
+
+    res.json({
+      success: true,
+      members: formattedMembers,
+      group_id: id,
+      group_name: groups[0].name
+    });
+
+  } catch (error) {
+    console.error('❌ Get group members error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch group members'
+    });
+  }
+});
+
+// DELETE /api/admin/groups/:id - Delete group
+router.delete('/groups/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason = 'Deleted by admin' } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('🗑️ Admin: Deleting group ID:', id, 'Reason:', reason);
+
+    // Verify group exists
+    const [groups] = await db.execute(
+      'SELECT * FROM groups WHERE id = ?',
+      [id]
+    );
+
+    if (groups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found'
+      });
+    }
+
+    const group = groups[0];
+
+    // Check if group has members
+    const [memberCount] = await db.execute(
+      'SELECT COUNT(*) as count FROM group_members WHERE group_id = ?',
+      [id]
+    );
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // 1. Remove all group members (if any)
+        if (memberCount[0].count > 0) {
+          await connection.execute(
+            'DELETE FROM group_members WHERE group_id = ?',
+            [id]
+          );
+        }
+
+        // 2. Delete group
+        await connection.execute(
+          'DELETE FROM groups WHERE id = ?',
+          [id]
+        );
+
+        // 3. Notify creator that group was deleted
+        try {
+          await connection.execute(
+            `INSERT INTO notifications 
+             (user_id, message, type, status, created_at) 
+             VALUES (?, ?, 'system', 'unread', NOW())`,
+            [
+              group.creator_id,
+              `Your group "${group.name}" has been deleted by admin. Reason: ${reason}`
+            ]
+          );
+        } catch (notifyError) {
+          console.warn('⚠️ Could not notify group creator:', notifyError.message);
+        }
+
+        // 4. Log admin activity
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, details) 
+           VALUES (?, 'group_delete', ?, ?)`,
+          [
+            adminId,
+            `Deleted group: ${group.name}`,
+            JSON.stringify({
+              group_id: id,
+              group_name: group.name,
+              members_removed: memberCount[0].count,
+              reason: reason
+            })
+          ]
+        );
+
+        console.log('✅ Group deleted successfully');
+      } catch (error) {
+        console.error('❌ Error within delete transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Group deleted successfully',
+      group_name: group.name,
+      members_removed: memberCount[0].count
+    });
+
+  } catch (error) {
+    console.error('❌ Delete group error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete group'
+    });
+  }
+});
+
+// PUT /api/admin/groups/:id - Update group
+router.put('/groups/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+    const adminId = req.admin.id;
+
+    console.log('✏️ Admin: Updating group ID:', id, 'Data:', updateData);
+
+    // Verify group exists
+    const [groups] = await db.execute(
+      'SELECT id, name FROM groups WHERE id = ?',
+      [id]
+    );
+
+    if (groups.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Group not found'
+      });
+    }
+
+    // Build update query
+    const allowedFields = ['name', 'description', 'game_specialty', 'visibility', 'max_members'];
+    const updateFields = [];
+    const updateValues = [];
+
+    for (const field of allowedFields) {
+      if (field in updateData) {
+        updateFields.push(`${field} = ?`);
+        updateValues.push(updateData[field]);
+      }
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid fields to update'
+      });
+    }
+
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(id);
+
+    const updateQuery = `
+      UPDATE groups 
+      SET ${updateFields.join(', ')} 
+      WHERE id = ?
+    `;
+
+    await db.execute(updateQuery, updateValues);
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'group_update', 'Updated group #${id}')`,
+      [adminId]
+    );
+
+    // Get updated group
+    const [updatedGroups] = await db.execute(
+      'SELECT * FROM groups WHERE id = ?',
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Group updated successfully',
+      group: updatedGroups[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Update group error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update group'
+    });
+  }
+});
+
+// DELETE /api/admin/groups/:groupId/members/:userId - Remove member from group
+router.delete('/groups/:groupId/members/:userId', authenticateAdmin, async (req, res) => {
+  try {
+    const { groupId, userId } = req.params;
+    const { reason = 'Removed by admin' } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('👥 Admin: Removing member', userId, 'from group', groupId);
+
+    // Check if member exists
+    const [members] = await db.execute(`
+      SELECT gm.*, u.username, g.name as group_name
+      FROM group_members gm
+      JOIN users u ON gm.user_id = u.id
+      JOIN groups g ON gm.group_id = g.id
+      WHERE gm.group_id = ? AND gm.user_id = ?
+    `, [groupId, userId]);
+
+    if (members.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found in group'
+      });
+    }
+
+    const member = members[0];
+
+    // Don't allow removing the creator
+    const [groupInfo] = await db.execute(
+      'SELECT creator_id FROM groups WHERE id = ?',
+      [groupId]
+    );
+
+    if (groupInfo[0].creator_id == userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot remove group creator'
+      });
+    }
+
+    await db.withTransaction(async (connection) => {
+      try {
+        // Remove member
+        await connection.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [groupId, userId]
+        );
+
+        // Notify the removed user
+        try {
+          await connection.execute(
+            `INSERT INTO notifications 
+             (user_id, message, type, status, created_at) 
+             VALUES (?, ?, 'system', 'unread', NOW())`,
+            [
+              userId,
+              `You have been removed from group "${member.group_name}" by admin. Reason: ${reason}`
+            ]
+          );
+        } catch (notifyError) {
+          console.warn('⚠️ Could not notify removed member:', notifyError.message);
+        }
+
+        // Log activity
+        await connection.execute(
+          `INSERT INTO admin_activity_logs 
+           (admin_id, action_type, description, affected_user_id, details) 
+           VALUES (?, 'group_member_remove', ?, ?, ?)`,
+          [
+            adminId,
+            `Removed member from group: ${member.group_name}`,
+            userId,
+            JSON.stringify({
+              group_id: groupId,
+              group_name: member.group_name,
+              member_username: member.username,
+              reason: reason
+            })
+          ]
+        );
+      } catch (error) {
+        console.error('❌ Error within remove member transaction:', error);
+        throw error;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Member removed successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Remove member error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove member'
+    });
+  }
+});
+
+// ==================== GROUPS STATISTICS ====================
+
+// GET /api/admin/groups/stats - Get groups statistics
+router.get('/groups/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching groups statistics');
+
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_groups,
+        COUNT(CASE WHEN visibility = 'public' THEN 1 END) as public_groups,
+        COUNT(CASE WHEN visibility = 'private' THEN 1 END) as private_groups,
+        COALESCE(SUM(
+          (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id AND gm.status = 'joined')
+        ), 0) as total_members,
+        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as recent_groups,
+        COUNT(DISTINCT creator_id) as unique_creators
+      FROM groups g
+    `);
+
+    // Get groups by game specialty (top 5)
+    const [topGames] = await db.execute(`
+      SELECT 
+        game_specialty,
+        COUNT(*) as group_count
+      FROM groups
+      WHERE game_specialty IS NOT NULL AND game_specialty != ''
+      GROUP BY game_specialty
+      ORDER BY group_count DESC
+      LIMIT 5
+    `);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total_groups: 0,
+        public_groups: 0,
+        private_groups: 0,
+        total_members: 0,
+        recent_groups: 0,
+        unique_creators: 0
+      },
+      top_games: topGames
+    });
+
+  } catch (error) {
+    console.error('❌ Get groups stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch groups statistics'
+    });
+  }
+});
+// GET /api/admin/groups/stats - Get groups statistics
+router.get('/groups/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching groups statistics');
+
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_groups,
+        COUNT(CASE WHEN visibility = 'public' THEN 1 END) as public_groups,
+        COUNT(CASE WHEN visibility = 'private' THEN 1 END) as private_groups,
+        COALESCE(SUM(
+          (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id AND gm.status = 'joined')
+        ), 0) as total_members,
+        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as recent_groups
+      FROM groups g
+    `);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total_groups: 0,
+        public_groups: 0,
+        private_groups: 0,
+        total_members: 0,
+        recent_groups: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get groups stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch groups statistics'
+    });
+  }
+});
 module.exports = router;

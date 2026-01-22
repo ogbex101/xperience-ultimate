@@ -283,7 +283,8 @@ function App() {
 				          <Route path="tournaments" element={<TournamentsManagement />} />
 				          <Route path="system-settings" element={<SystemSettings />} />
 				          <Route path="fraud" element={<FraudDetection />} />
-				          <Route path="groups-management" element={<GroupsManagement />} />
+				          <Route path="groups" element={<GroupsManagement />} />
+<Route path="notifications" element={<NotificationsPage />} />
 				          <Route path="reports" element={<ReportsAnalytics />} />
                   <Route path="admins" element={<AdminManagement />} />
                 </Route>

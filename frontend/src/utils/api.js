@@ -1391,6 +1391,47 @@ const adminAPI = {
     console.log(`⚙️ AdminAPI: Updating XP rate for ${currency}`);
     return await adminApi.post(`/admin/settings/xp-rates/${currency}`, { rate });
   },
+  // Groups Management (MISSING FUNCTIONS)
+getGroups: async (search = '', page = 1, limit = 20) => {
+  console.log(`👥 AdminAPI: Fetching groups - Search: ${search}, Page: ${page}`);
+  const params = new URLSearchParams();
+  if (search) params.append('search', search);
+  params.append('page', page);
+  params.append('limit', limit);
+  return await adminApi.get(`/admin/groups?${params}`);
+},
+
+getGroupDetails: async (id) => {
+  console.log(`👥 AdminAPI: Fetching group ${id} details`);
+  return await adminApi.get(`/admin/groups/${id}`);
+},
+
+getGroupMembers: async (id) => {
+  console.log(`👥 AdminAPI: Fetching members for group ${id}`);
+  return await adminApi.get(`/admin/groups/${id}/members`);
+},
+
+updateGroup: async (id, groupData) => {
+  console.log(`👥 AdminAPI: Updating group ${id}`);
+  return await adminApi.put(`/admin/groups/${id}`, groupData);
+},
+
+deleteGroup: async (id, reason = '') => {
+  console.log(`👥 AdminAPI: Deleting group ${id}`);
+  return await adminApi.delete(`/admin/groups/${id}`, { data: { reason } });
+},
+
+removeGroupMember: async (groupId, userId, reason = '') => {
+  console.log(`👥 AdminAPI: Removing member ${userId} from group ${groupId}`);
+  return await adminApi.delete(`/admin/groups/${groupId}/members/${userId}`, { 
+    data: { reason } 
+  });
+},
+
+getGroupsStats: async () => {
+  console.log(`📊 AdminAPI: Fetching groups stats`);
+  return await adminApi.get(`/admin/groups/stats`);
+},
   
   // Fraud Detection
   getFraudFlags: async (status = 'pending', page = 1, limit = 20) => {
@@ -1503,12 +1544,104 @@ const adminAPI = {
     console.log(`🎮 AdminAPI: Deleting game ${id}`);
     return await adminApi.delete(`/admin/games/${id}`);
   },
-  
-  // Broadcast Message
-  broadcastMessage: async (message) => {
-    console.log('📢 AdminAPI: Broadcasting message');
-    return await adminApi.post('/admin/broadcast-message', { message });
+  sendEmailNotification: async (formData) => {
+    try {
+      const response = await axios.post('/api/admin/send-email-notification', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error;
+    }
   },
+
+  getEmailTemplates: async () => {
+    try {
+      const response = await axios.get('/api/admin/email/templates', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('adminToken')}` }
+      });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error;
+    }
+  },
+
+  getEmailQueue: async (status = 'all', page = 1, limit = 20) => {
+    try {
+      const response = await axios.get(`/api/admin/email/queue?status=${status}&page=${page}&limit=${limit}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('adminToken')}` }
+      });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error;
+    }
+  },
+
+  testEmailConfig: async (email) => {
+    try {
+      const response = await axios.post('/api/admin/email/test', { email }, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('adminToken')}` }
+      });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error;
+    }
+  },
+ // SIMPLE VERSION - comment out the old one
+sendEmailNotification: async (payload) => {
+  try {
+    console.log('📧 SIMPLE API: Sending JSON payload');
+    const response = await axios.post('/api/admin/send-email-notification', payload, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
+      }
+    });
+    return response.data;
+  } catch (error) {
+    console.error('📧 SIMPLE API: Error:', error.response?.data);
+    throw error.response?.data || error;
+  }
+},
+
+  getEmailTemplates: async () => {
+    try {
+      const response = await axios.get('/api/admin/email/templates', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('adminToken')}` }
+      });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error;
+    }
+  },
+
+  getEmailQueue: async (status = 'all', page = 1, limit = 20) => {
+    try {
+      const response = await axios.get(`/api/admin/email/queue?status=${status}&page=${page}&limit=${limit}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('adminToken')}` }
+      });
+      return response.data;
+    } catch (error) {
+      throw error.response?.data || error;
+    }
+  },
+
+  testEmailConfig: async (email) => {
+  try {
+    const response = await axios.post('/api/admin/email/test', { email }, {
+      headers: { 
+        'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+},
   
   // System Health
   getSystemHealth: async () => {
@@ -1522,6 +1655,90 @@ const adminAPI = {
     console.log('🚪 AdminAPI: Logging out admin');
     localStorage.removeItem('adminToken');
     localStorage.removeItem('adminData');
+  }
+};
+// Add to your api.js file
+export const fraudApi = {
+  // Get fraud statistics
+  getFraudStats: async () => {
+    const response = await fetch('/api/admin/fraud/stats', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('admin_token')}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!response.ok) throw new Error('Failed to fetch fraud stats');
+    return response.json();
+  },
+
+  // Get suspicious users
+  getSuspiciousUsers: async (page = 1, limit = 20, riskMin = 0) => {
+    const params = new URLSearchParams({ page, limit, risk_min: riskMin });
+    const response = await fetch(`/api/admin/fraud/suspicious-users?${params}`, {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('admin_token')}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!response.ok) throw new Error('Failed to fetch suspicious users');
+    return response.json();
+  },
+
+  // Get fraud patterns
+  getFraudPatterns: async () => {
+    const response = await fetch('/api/admin/fraud/patterns', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('admin_token')}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!response.ok) throw new Error('Failed to fetch fraud patterns');
+    return response.json();
+  },
+
+  // Run fraud scan
+  runFraudScan: async (scanType = 'full') => {
+    const response = await fetch('/api/admin/fraud/scan', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('admin_token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ scanType })
+    });
+    if (!response.ok) throw new Error('Failed to initiate fraud scan');
+    return response.json();
+  },
+
+  // Review suspicious activity
+  reviewSuspiciousActivity: async (activityId, status, notes = '') => {
+    const response = await fetch(`/api/admin/fraud/suspicious-activities/${activityId}/review`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('admin_token')}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ status, notes })
+    });
+    if (!response.ok) throw new Error('Failed to review activity');
+    return response.json();
+  },
+
+  // Get fraud flags (existing)
+  getFraudFlags: async (status = '', page = 1, limit = 20) => {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    params.append('page', page);
+    params.append('limit', limit);
+    
+    const response = await fetch(`/api/admin/fraud/flags?${params}`, {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('admin_token')}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!response.ok) throw new Error('Failed to fetch fraud flags');
+    return response.json();
   }
 };
 // Dashboard-specific API calls

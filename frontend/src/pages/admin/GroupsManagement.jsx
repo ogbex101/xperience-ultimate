@@ -44,21 +44,59 @@ const GroupsManagement = () => {
   };
 
   const loadStats = async () => {
-    try {
-      const response = await adminAPI.getDashboardStats();
-      if (response.stats) {
+  try {
+    console.log('📊 Loading groups stats...');
+    
+    // FIRST: Try the groups stats endpoint
+    const response = await adminAPI.getGroupsStats();
+    console.log('📊 Groups stats response:', response);
+    
+    if (response && response.success) {
+      setStats({
+        total: response.stats.total_groups || 0,
+        public: response.stats.public_groups || 0,
+        private: response.stats.private_groups || 0,
+        totalMembers: response.stats.total_members || 0,
+        activeGroups: response.stats.recent_groups || 0
+      });
+    } else {
+      // FALLBACK: Try dashboard stats
+      console.log('📊 Falling back to dashboard stats...');
+      const dashboardResponse = await adminAPI.getDashboardStats();
+      console.log('📊 Dashboard stats response:', dashboardResponse);
+      
+      if (dashboardResponse && dashboardResponse.stats) {
         setStats({
-          total: response.stats.totalGroups || 0,
-          public: response.stats.publicGroups || 0,
-          private: response.stats.privateGroups || 0,
-          totalMembers: response.stats.totalGroupMembers || 0,
-          activeGroups: response.stats.activeGroups || 0
+          total: dashboardResponse.stats.total_groups || 0,
+          public: dashboardResponse.stats.public_groups || 0,
+          private: dashboardResponse.stats.private_groups || 0,
+          totalMembers: dashboardResponse.stats.total_group_members || 0,
+          activeGroups: dashboardResponse.stats.active_groups || 0
+        });
+      } else {
+        // DEFAULT: Set zeros if both fail
+        console.log('📊 Setting default stats (0)');
+        setStats({
+          total: 0,
+          public: 0,
+          private: 0,
+          totalMembers: 0,
+          activeGroups: 0
         });
       }
-    } catch (error) {
-      console.error('Error loading stats:', error);
     }
-  };
+  } catch (error) {
+    console.error('❌ Error loading stats:', error);
+    // Set default stats
+    setStats({
+      total: 0,
+      public: 0,
+      private: 0,
+      totalMembers: 0,
+      activeGroups: 0
+    });
+  }
+};
 
   const loadMembers = async (groupId) => {
     try {

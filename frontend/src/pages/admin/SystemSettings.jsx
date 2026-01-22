@@ -451,105 +451,101 @@ const SystemSettings = () => {
   };
 
   const sendNotification = async () => {
-    if (!notification.subject.trim()) {
-      setSaveMessage({ type: 'error', text: 'Subject is required' });
-      return;
-    }
+  console.log('📧 SIMPLE FIX: Starting sendNotification');
+  console.log('📧 Current notification state:', notification);
 
-    if (!notification.message.trim()) {
-      setSaveMessage({ type: 'error', text: 'Message is required' });
-      return;
-    }
+  if (!notification.subject || !notification.subject.trim()) {
+    setSaveMessage({ type: 'error', text: 'Subject is required' });
+    return;
+  }
 
-    if (notification.sendTo === 'selected' && notification.selectedUsers.length === 0) {
-      setSaveMessage({ type: 'error', text: 'Please select at least one user' });
-      return;
-    }
+  if (!notification.message || !notification.message.trim()) {
+    setSaveMessage({ type: 'error', text: 'Message is required' });
+    return;
+  }
 
-    const confirmed = window.confirm(
-      `Send this notification to ${notification.sendTo === 'all' ? 'ALL users' : `${notification.selectedUsers.length} selected users`}?`
-    );
+  if (notification.sendTo === 'selected' && notification.selectedUsers.length === 0) {
+    setSaveMessage({ type: 'error', text: 'Please select at least one user' });
+    return;
+  }
 
-    if (!confirmed) return;
+  const confirmed = window.confirm(
+    `Send this email to ${notification.sendTo === 'all' ? 'ALL users' : `${notification.selectedUsers.length} selected users`}?\n\n` +
+    `This will send both:\n• Email notification to their email addresses\n• In-app notification in the platform`
+  );
 
-    setSendingNotification(true);
+  if (!confirmed) return;
 
-    try {
-      // Prepare form data for file upload
-      const formData = new FormData();
-      formData.append('subject', notification.subject);
-      formData.append('message', notification.message);
-      formData.append('sendTo', notification.sendTo);
-      
-      if (notification.image) {
-        formData.append('image', notification.image);
-      }
-      
-      if (notification.sendTo === 'selected') {
-        formData.append('userIds', JSON.stringify(notification.selectedUsers));
-      }
+  setSendingNotification(true);
 
-      // This endpoint needs to be created in admin.js
-      const response = await fetch('/api/admin/send-email-notification', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
-        },
-        body: formData
+  try {
+    // SIMPLE JSON payload - NO FORM DATA
+    const payload = {
+      subject: notification.subject.trim(),
+      message: notification.message.trim(),
+      recipientType: notification.sendTo,
+      filters: notification.filters,
+      recipients: notification.sendTo === 'selected' ? notification.selectedUsers : []
+    };
+
+    console.log('📧 SIMPLE FIX: Sending JSON payload:', payload);
+
+    // Use fetch directly with JSON
+    const token = localStorage.getItem('adminToken');
+    const response = await fetch('http://localhost:5000/api/admin/send-email-notification', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    console.log('📧 SIMPLE FIX: Response status:', response.status);
+    
+    const data = await response.json();
+    console.log('📧 SIMPLE FIX: Response data:', data);
+
+    if (response.ok && data.success) {
+      setSaveMessage({ 
+        type: 'success', 
+        text: `✅ Success!\n• Emails sent: ${data.email_results?.sent || 0}/${data.email_results?.total || 0}\n• In-app notifications: ${data.broadcast_results?.sent || 0}/${data.broadcast_results?.total || 0}`
       });
-
-      const data = await response.json();
-
-      if (response.ok && data.success) {
-        setSaveMessage({ 
-          type: 'success', 
-          text: `Notification sent to ${data.users_notified} users successfully!`
-        });
-        
-        // Reset notification form
-        setNotification({
-          subject: '',
-          message: '',
-          image: null,
-          imagePreview: '',
-          sendTo: 'all',
-          selectedUsers: [],
-          filters: {
-            rank: '',
-            minBalance: '',
-            maxBalance: '',
-            status: 'active',
-            joinedAfter: '',
-            joinedBefore: ''
-          }
-        });
-        
-        // Also send in-app notification
-        const broadcastResponse = await adminAPI.broadcastMessage(
-          `SYSTEM: ${notification.subject} - ${notification.message}`
-        );
-        
-        if (broadcastResponse.success) {
-          console.log(`Also sent in-app notification to ${broadcastResponse.users_notified} users`);
+      
+      // Reset notification form
+      setNotification({
+        subject: '',
+        message: '',
+        image: null,
+        imagePreview: '',
+        sendTo: 'all',
+        selectedUsers: [],
+        filters: {
+          rank: '',
+          minBalance: '',
+          maxBalance: '',
+          status: 'active',
+          joinedAfter: '',
+          joinedBefore: ''
         }
-      } else {
-        setSaveMessage({ 
-          type: 'error', 
-          text: data.message || 'Failed to send notification' 
-        });
-      }
-    } catch (error) {
-      console.error('Error sending notification:', error);
+      });
+    } else {
       setSaveMessage({ 
         type: 'error', 
-        text: 'Failed to send notification. Please try again.' 
+        text: data.message || 'Failed to send notification' 
       });
-    } finally {
-      setSendingNotification(false);
-      setTimeout(() => setSaveMessage({ type: '', text: '' }), 5000);
     }
-  };
-
+  } catch (error) {
+    console.error('❌ Error sending notification:', error);
+    setSaveMessage({ 
+      type: 'error', 
+      text: error.message || 'Failed to send notification. Please try again.' 
+    });
+  } finally {
+    setSendingNotification(false);
+    setTimeout(() => setSaveMessage({ type: '', text: '' }), 5000);
+  }
+};
   // Factory Reset Handlers
   const handleFactoryResetChange = (field, value) => {
     setFactoryReset(prev => ({
@@ -1715,29 +1711,48 @@ const SystemSettings = () => {
                 </button>
               </div>
               
-              {/* Test Button */}
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={() => {
-                    // Test with a sample email
-                    setNotification({
-                      ...notification,
-                      subject: 'Test Notification from Xperience',
-                      message: 'This is a test notification to verify the email system is working correctly. If you received this, the email notification system is functioning properly.',
-                      sendTo: 'selected',
-                      selectedUsers: availableUsers.slice(0, 1).map(u => u.id) // Select first user for test
-                    });
-                    setSaveMessage({
-                      type: 'info',
-                      text: 'Test email loaded. Review and click Send to test.'
-                    });
-                  }}
-                  className="px-4 py-2 bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 flex items-center text-sm"
-                >
-                  <Mail className="w-4 h-4 mr-2" />
-                  Load Test Email
-                </button>
-              </div>
+            {/* Test Configuration Button */}
+<div className="mt-4 flex space-x-4">
+  <button
+    onClick={async () => {
+      try {
+        const response = await adminAPI.testEmailConfig('test@example.com');
+        setSaveMessage({
+          type: response.success ? 'success' : 'error',
+          text: response.message || 'Test completed'
+        });
+      } catch (error) {
+        setSaveMessage({
+          type: 'error',
+          text: error.message || 'Failed to test email configuration'
+        });
+      }
+    }}
+    className="px-4 py-2 bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 flex items-center text-sm"
+  >
+    <Mail className="w-4 h-4 mr-2" />
+    Test Email Configuration
+  </button>
+  
+  <button
+    onClick={() => {
+      setNotification({
+        ...notification,
+        subject: 'Test Notification from Xperience',
+        message: 'This is a test notification to verify the email system is working correctly. If you received this, the email notification system is functioning properly.',
+        sendTo: 'all'
+      });
+      setSaveMessage({
+        type: 'info',
+        text: 'Test email loaded. Review and click Send to test.'
+      });
+    }}
+    className="px-4 py-2 bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 flex items-center text-sm"
+  >
+    <Mail className="w-4 h-4 mr-2" />
+    Load Test Email
+  </button>
+</div>
             </div>
           </div>
         )}
