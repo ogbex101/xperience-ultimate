@@ -1709,7 +1709,52 @@ export const fraudApi = {
     if (!response.ok) throw new Error('Failed to initiate fraud scan');
     return response.json();
   },
+// In adminAPI object in api.js:
 
+// Admin Management
+getAdmins: async () => {
+  console.log(`👑 AdminAPI: Fetching admins`);
+  return await adminApi.get(`/admin/admins`);
+},
+
+getAdminLogs: async (adminId = '', page = 1, limit = 50) => {
+  console.log(`👑 AdminAPI: Fetching admin logs`);
+  const params = new URLSearchParams();
+  if (adminId) params.append('adminId', adminId);
+  params.append('page', page);
+  params.append('limit', limit);
+  return await adminApi.get(`/admin/logs?${params}`);
+},
+
+createAdmin: async (adminData) => {
+  console.log(`👑 AdminAPI: Creating admin`);
+  return await adminApi.post(`/admin/admins`, adminData);
+},
+
+updateAdmin: async (id, adminData) => {
+  console.log(`👑 AdminAPI: Updating admin ${id}`);
+  return await adminApi.put(`/admin/admins/${id}`, adminData);
+},
+
+updateAdminPassword: async (id, newPassword) => {
+  console.log(`👑 AdminAPI: Updating password for admin ${id}`);
+  return await adminApi.put(`/admin/admins/${id}/password`, { newPassword });
+},
+
+deleteAdmin: async (id) => {
+  console.log(`👑 AdminAPI: Deleting admin ${id}`);
+  return await adminApi.delete(`/admin/admins/${id}`);
+},
+
+getActivityTypes: async () => {
+  console.log(`👑 AdminAPI: Fetching activity types`);
+  return await adminApi.get(`/admin/activity-types`);
+},
+
+toggleAdminActive: async (id, is_active) => {
+  console.log(`👑 AdminAPI: Toggling active status for admin ${id}`);
+  return await adminApi.post(`/admin/admins/${id}/toggle-active`, { is_active });
+},
   // Review suspicious activity
   reviewSuspiciousActivity: async (activityId, status, notes = '') => {
     const response = await fetch(`/api/admin/fraud/suspicious-activities/${activityId}/review`, {

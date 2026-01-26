@@ -6,6 +6,19 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const emailService = require('../services/emailService');
+const safeLogActivity = async (adminId, actionType, description, affectedUserId = null) => {
+  try {
+    // Simple insert that won't fail on duplicate key
+    await db.execute(
+      `INSERT IGNORE INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id, created_at) 
+       VALUES (?, ?, ?, ?, NOW())`,
+      [adminId, actionType, description, affectedUserId]
+    );
+  } catch (error) {
+    console.warn('⚠️ Could not log activity (safe mode):', error.message);
+  }
+};
 
 // ==================== TEST & DEBUG ROUTES ====================
 
@@ -362,6 +375,20 @@ router.get('/dashboard/stats', authenticateAdmin, async (req, res) => {
       WHERE m.status = 'ongoing'
       ORDER BY m.created_at DESC
       LIMIT 5`);
+      // Add to your dashboard/stats endpoint
+const [recentAnalytics] = await db.execute(`
+  SELECT 
+    COUNT(DISTINCT user_id) as active_today,
+    COALESCE(SUM(CASE WHEN type = 'deposit' THEN amount ELSE 0 END), 0) as deposits_today,
+    COUNT(DISTINCT CASE WHEN type = 'match' THEN id END) as matches_today
+  FROM (
+    SELECT user_id, 'login' as type, created_at FROM user_logins WHERE DATE(login_time) = CURDATE()
+    UNION ALL
+    SELECT user_id, 'deposit' as type, created_at FROM transactions WHERE DATE(created_at) = CURDATE() AND type = 'deposit'
+    UNION ALL
+    SELECT player1_id as user_id, 'match' as type, created_at FROM matches WHERE DATE(created_at) = CURDATE()
+  ) as today_activity
+`);
 
     const [ongoingTournaments] = await db.execute(`SELECT 
       t.*, 
@@ -4714,6 +4741,42 @@ router.post('/email/test', authenticateAdmin, async (req, res) => {
   }
 });
 // ==================== GROUPS MANAGEMENT ENDPOINTS ====================
+// GET /api/admin/groups/stats - Get groups statistics
+router.get('/groups/stats', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin: Fetching groups statistics');
+
+    const [stats] = await db.execute(`
+      SELECT 
+        COUNT(*) as total_groups,
+        COUNT(CASE WHEN visibility = 'public' THEN 1 END) as public_groups,
+        COUNT(CASE WHEN visibility = 'private' THEN 1 END) as private_groups,
+        COALESCE(SUM(
+          (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id AND gm.status = 'joined')
+        ), 0) as total_members,
+        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as recent_groups
+      FROM groups g
+    `);
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        total_groups: 0,
+        public_groups: 0,
+        private_groups: 0,
+        total_members: 0,
+        recent_groups: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get groups stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch groups statistics'
+    });
+  }
+});
 
 // GET /api/admin/groups - Get all groups (UPDATED WITH FILTER)
 router.get('/groups', authenticateAdmin, async (req, res) => {
@@ -4783,17 +4846,19 @@ router.get('/groups', authenticateAdmin, async (req, res) => {
       updated_at: group.updated_at
     }));
 
-    // Log activity
-    try {
-      await db.execute(
-        `INSERT INTO admin_activity_logs 
-         (admin_id, action_type, description) 
-         VALUES (?, 'view', 'Viewed groups list')`,
-        [adminId]
-      );
-    } catch (logError) {
-      console.warn('⚠️ Could not log activity:', logError.message);
-    }
+    // Log activity (simplified to avoid primary key issues)
+try {
+  // Check if table exists and has auto-increment
+  await db.execute(
+    `INSERT INTO admin_activity_logs 
+     (admin_id, action_type, description, created_at) 
+     VALUES (?, 'view', 'Viewed groups list', NOW())`,
+    [adminId]
+  );
+} catch (logError) {
+  console.warn('⚠️ Could not log activity:', logError.message);
+  // Don't fail the whole request if logging fails
+}
 
     res.json({
       success: true,
@@ -5232,93 +5297,1234 @@ router.delete('/groups/:groupId/members/:userId', authenticateAdmin, async (req,
     });
   }
 });
-
-// ==================== GROUPS STATISTICS ====================
-
-// GET /api/admin/groups/stats - Get groups statistics
-router.get('/groups/stats', authenticateAdmin, async (req, res) => {
+// GET /api/admin/groups/test - Test endpoint
+router.get('/groups/test', authenticateAdmin, async (req, res) => {
   try {
-    console.log('📊 Admin: Fetching groups statistics');
-
-    const [stats] = await db.execute(`
-      SELECT 
-        COUNT(*) as total_groups,
-        COUNT(CASE WHEN visibility = 'public' THEN 1 END) as public_groups,
-        COUNT(CASE WHEN visibility = 'private' THEN 1 END) as private_groups,
-        COALESCE(SUM(
-          (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id AND gm.status = 'joined')
-        ), 0) as total_members,
-        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as recent_groups,
-        COUNT(DISTINCT creator_id) as unique_creators
-      FROM groups g
-    `);
-
-    // Get groups by game specialty (top 5)
-    const [topGames] = await db.execute(`
-      SELECT 
-        game_specialty,
-        COUNT(*) as group_count
-      FROM groups
-      WHERE game_specialty IS NOT NULL AND game_specialty != ''
-      GROUP BY game_specialty
-      ORDER BY group_count DESC
-      LIMIT 5
-    `);
-
+    // Test database connection
+    const [groupsCount] = await db.execute('SELECT COUNT(*) as count FROM groups');
+    const [membersCount] = await db.execute('SELECT COUNT(*) as count FROM group_members WHERE status = "joined"');
+    
     res.json({
       success: true,
-      stats: stats[0] || {
-        total_groups: 0,
-        public_groups: 0,
-        private_groups: 0,
-        total_members: 0,
-        recent_groups: 0,
-        unique_creators: 0
-      },
-      top_games: topGames
+      message: 'Groups API is working',
+      test_data: {
+        groups_count: groupsCount[0].count,
+        members_count: membersCount[0].count,
+        timestamp: new Date().toISOString()
+      }
     });
-
   } catch (error) {
-    console.error('❌ Get groups stats error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch groups statistics'
+      message: 'Test failed',
+      error: error.message
     });
   }
 });
-// GET /api/admin/groups/stats - Get groups statistics
-router.get('/groups/stats', authenticateAdmin, async (req, res) => {
-  try {
-    console.log('📊 Admin: Fetching groups statistics');
+// ==================== ANALYTICS & REPORTS ENDPOINTS ====================
 
-    const [stats] = await db.execute(`
-      SELECT 
-        COUNT(*) as total_groups,
-        COUNT(CASE WHEN visibility = 'public' THEN 1 END) as public_groups,
-        COUNT(CASE WHEN visibility = 'private' THEN 1 END) as private_groups,
-        COALESCE(SUM(
-          (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id AND gm.status = 'joined')
-        ), 0) as total_members,
-        COUNT(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as recent_groups
-      FROM groups g
-    `);
+// GET /api/admin/analytics - Get analytics data (FIXED for your database)
+router.get('/analytics', authenticateAdmin, async (req, res) => {
+  try {
+    const { period = '30d' } = req.query;
+    console.log('📈 Admin: Fetching analytics for period:', period);
+
+    // Calculate date range
+    let dateRange = '';
+    let format = '%Y-%m-%d';
+    
+    switch(period) {
+      case '7d':
+        dateRange = 'INTERVAL 7 DAY';
+        break;
+      case '30d':
+        dateRange = 'INTERVAL 30 DAY';
+        break;
+      case '90d':
+        dateRange = 'INTERVAL 90 DAY';
+        format = '%Y-%u'; // Weekly format
+        break;
+      case '1y':
+        dateRange = 'INTERVAL 1 YEAR';
+        format = '%Y-%m'; // Monthly format
+        break;
+      case 'all':
+        dateRange = 'INTERVAL 100 YEAR'; // All time
+        break;
+      default:
+        dateRange = 'INTERVAL 30 DAY';
+    }
+
+    // ==================== 1. FINANCIAL ANALYTICS ====================
+
+    // Get Total Deposits (Revenue)
+    let totalDeposits = 0;
+    try {
+      const [depositsResult] = await db.execute(`
+        SELECT COALESCE(SUM(amount), 0) as total_deposits
+        FROM transactions 
+        WHERE type = 'deposit' 
+          AND status = 'completed'
+          AND created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+      totalDeposits = depositsResult[0]?.total_deposits || 0;
+    } catch (error) {
+      console.warn('⚠️ Deposits query error:', error.message);
+    }
+
+    // Get Total Withdrawals
+    let totalWithdrawals = 0;
+    try {
+      const [withdrawalsResult] = await db.execute(`
+        SELECT COALESCE(SUM(amount), 0) as total_withdrawals
+        FROM transactions 
+        WHERE type = 'withdrawal' 
+          AND status = 'completed'
+          AND created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+      totalWithdrawals = withdrawalsResult[0]?.total_withdrawals || 0;
+    } catch (error) {
+      console.warn('⚠️ Withdrawals query error:', error.message);
+    }
+
+    // ==================== 2. PLATFORM FEES (15%) ====================
+
+    // Get Match Stakes (for platform fee calculation - 15%)
+    let matchStakes = 0;
+    let matchPlatformFees = 0;
+    try {
+      const [matchStakesResult] = await db.execute(`
+        SELECT COALESCE(SUM(stake_amount), 0) as total_stake
+        FROM matches 
+        WHERE status = 'completed'
+          AND created_at >= DATE_SUB(NOW(), ${dateRange})
+          AND stake_amount > 0
+      `);
+      matchStakes = matchStakesResult[0]?.total_stake || 0;
+      matchPlatformFees = matchStakes * 0.15;
+    } catch (error) {
+      console.warn('⚠️ Match stakes query error:', error.message);
+    }
+
+    // Get Tournament Entry Fees (for platform fee calculation - 15%)
+    let tournamentFees = 0;
+    let tournamentPlatformFees = 0;
+    try {
+      const [tournamentFeesResult] = await db.execute(`
+        SELECT COALESCE(SUM(xp_entry_fee), 0) as total_entry_fees
+        FROM tournaments 
+        WHERE status IN ('ongoing', 'completed')
+          AND created_at >= DATE_SUB(NOW(), ${dateRange})
+          AND xp_entry_fee > 0
+      `);
+      tournamentFees = tournamentFeesResult[0]?.total_entry_fees || 0;
+      tournamentPlatformFees = tournamentFees * 0.15;
+    } catch (error) {
+      console.warn('⚠️ Tournament fees query error:', error.message);
+    }
+
+    // Calculate Total Platform Fees
+    const totalPlatformFees = matchPlatformFees + tournamentPlatformFees;
+
+    // ==================== 3. USER STATISTICS ====================
+
+    let userStats = { total_users: 0, active_users_7d: 0 };
+    try {
+      // Get total users (created in period)
+      const [totalUsersResult] = await db.execute(`
+        SELECT COUNT(*) as total_users
+        FROM users 
+        WHERE created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+
+      // Get active users (users with any activity in last 7 days)
+      const [activeUsersResult] = await db.execute(`
+        SELECT COUNT(DISTINCT user_id) as active_users
+        FROM (
+          SELECT player1_id as user_id FROM matches WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+          UNION
+          SELECT player2_id as user_id FROM matches WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) AND player2_id IS NOT NULL
+          UNION
+          SELECT user_id FROM transactions WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+          UNION
+          SELECT creator_id as user_id FROM tournaments WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+          UNION
+          SELECT user_id FROM group_members WHERE joined_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        ) as recent_activity
+      `);
+
+      userStats = {
+        total_users: totalUsersResult[0]?.total_users || 0,
+        active_users_7d: activeUsersResult[0]?.active_users || 0
+      };
+    } catch (error) {
+      console.warn('⚠️ User stats query error:', error.message);
+    }
+
+    // ==================== 4. MATCH STATISTICS ====================
+
+    let matchStats = { total_matches: 0, unique_players: 0 };
+    try {
+      const [matchStatsResult] = await db.execute(`
+        SELECT 
+          COUNT(*) as total_matches,
+          COUNT(DISTINCT player1_id) + COUNT(DISTINCT player2_id) as unique_players
+        FROM matches 
+        WHERE created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+      matchStats = {
+        total_matches: matchStatsResult[0]?.total_matches || 0,
+        unique_players: matchStatsResult[0]?.unique_players || 0
+      };
+    } catch (error) {
+      console.warn('⚠️ Match stats query error:', error.message);
+    }
+
+    // ==================== 5. TOURNAMENT STATISTICS ====================
+
+    let tournamentStats = { total_tournaments: 0, ongoing_tournaments: 0 };
+    try {
+      const [tournamentStatsResult] = await db.execute(`
+        SELECT 
+          COUNT(*) as total_tournaments,
+          COUNT(CASE WHEN status = 'ongoing' THEN 1 END) as ongoing_tournaments
+        FROM tournaments 
+        WHERE created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+      tournamentStats = {
+        total_tournaments: tournamentStatsResult[0]?.total_tournaments || 0,
+        ongoing_tournaments: tournamentStatsResult[0]?.ongoing_tournaments || 0
+      };
+    } catch (error) {
+      console.warn('⚠️ Tournament stats query error:', error.message);
+    }
+
+    // ==================== 6. PENDING WITHDRAWALS ====================
+
+    let pendingWithdrawals = { count: 0, total_amount: 0 };
+    try {
+      const [pendingResult] = await db.execute(`
+        SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total_amount
+        FROM withdrawal_requests 
+        WHERE status = 'pending'
+          AND created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+      pendingWithdrawals = {
+        count: pendingResult[0]?.count || 0,
+        total_amount: pendingResult[0]?.total_amount || 0
+      };
+    } catch (error) {
+      console.warn('⚠️ Pending withdrawals query error:', error.message);
+    }
+
+    // ==================== 7. REVENUE TREND ====================
+
+    let revenueTrend = [];
+    try {
+      const [trendResult] = await db.execute(`
+        SELECT 
+          DATE_FORMAT(created_at, ?) as period,
+          SUM(CASE WHEN type = 'deposit' THEN amount ELSE 0 END) as deposits,
+          SUM(CASE WHEN type = 'withdrawal' THEN amount ELSE 0 END) as withdrawals
+        FROM transactions 
+        WHERE status = 'completed'
+          AND created_at >= DATE_SUB(NOW(), ${dateRange})
+        GROUP BY DATE_FORMAT(created_at, ?)
+        ORDER BY period
+      `, [format, format]);
+      revenueTrend = trendResult;
+    } catch (error) {
+      console.warn('⚠️ Revenue trend query error:', error.message);
+    }
+
+    // ==================== 8. TOP GAMES ====================
+
+    let topGames = [];
+    try {
+      const [gamesResult] = await db.execute(`
+        SELECT 
+          COALESCE(game, 'Unknown') as game,
+          COUNT(*) as match_count,
+          COALESCE(SUM(stake_amount), 0) as total_stake
+        FROM matches 
+        WHERE created_at >= DATE_SUB(NOW(), ${dateRange})
+        GROUP BY COALESCE(game, 'Unknown')
+        ORDER BY match_count DESC
+        LIMIT 5
+      `);
+      topGames = gamesResult;
+    } catch (error) {
+      console.warn('⚠️ Top games query error:', error.message);
+    }
+
+    // ==================== 9. CALCULATE NET REVENUE ====================
+
+    const netRevenue = totalDeposits - totalWithdrawals + totalPlatformFees;
+
+    // ==================== 10. GROUP STATISTICS ====================
+
+    let groupStats = { total_groups: 0, active_groups: 0 };
+    try {
+      const [groupsResult] = await db.execute(`
+        SELECT 
+          COUNT(*) as total_groups,
+          COUNT(DISTINCT gm.group_id) as active_groups
+        FROM groups g
+        LEFT JOIN group_members gm ON g.id = gm.group_id 
+          AND gm.joined_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        WHERE g.created_at >= DATE_SUB(NOW(), ${dateRange})
+      `);
+      groupStats = {
+        total_groups: groupsResult[0]?.total_groups || 0,
+        active_groups: groupsResult[0]?.active_groups || 0
+      };
+    } catch (error) {
+      console.warn('⚠️ Group stats query error:', error.message);
+    }
+
+    // ==================== 11. RESPONSE ====================
 
     res.json({
       success: true,
-      stats: stats[0] || {
-        total_groups: 0,
-        public_groups: 0,
-        private_groups: 0,
-        total_members: 0,
-        recent_groups: 0
+      analytics: {
+        period,
+        summary: {
+          // Financial
+          total_deposits: totalDeposits,
+          total_withdrawals: totalWithdrawals,
+          net_revenue: netRevenue,
+          
+          // Platform Fees
+          platform_fees: totalPlatformFees,
+          match_stakes: matchStakes,
+          tournament_fees: tournamentFees,
+          
+          // User Statistics
+          total_users: userStats.total_users,
+          active_users: userStats.active_users_7d,
+          
+          // Activity Statistics
+          total_matches: matchStats.total_matches,
+          total_tournaments: tournamentStats.total_tournaments,
+          ongoing_tournaments: tournamentStats.ongoing_tournaments,
+          total_groups: groupStats.total_groups,
+          active_groups: groupStats.active_groups,
+          
+          // Withdrawals
+          pending_withdrawals: pendingWithdrawals.count,
+          pending_withdrawal_amount: pendingWithdrawals.total_amount,
+          
+          // Other
+          unique_players: matchStats.unique_players
+        },
+        revenue_trend: revenueTrend,
+        top_games: topGames,
+        platform_fee_breakdown: {
+          match_stakes: matchStakes,
+          match_fees: matchPlatformFees,
+          tournament_fees: tournamentFees,
+          tournament_platform_fees: tournamentPlatformFees,
+          total_platform_fees: totalPlatformFees
+        }
       }
     });
 
   } catch (error) {
-    console.error('❌ Get groups stats error:', error);
+    console.error('❌ Get analytics error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch groups statistics'
+      message: 'Failed to fetch analytics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+// GET /api/admin/reports/history - Get report history
+router.get('/reports/history', authenticateAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const offset = (page - 1) * limit;
+
+    console.log('📋 Admin: Fetching report history - Page:', page);
+
+    // Check if reports table exists
+    let reports = [];
+    let total = 0;
+
+    try {
+      const [reportData] = await db.execute(`
+        SELECT * FROM admin_reports 
+        ORDER BY created_at DESC 
+        LIMIT ? OFFSET ?
+      `, [parseInt(limit), parseInt(offset)]);
+
+      const [countResult] = await db.execute(
+        'SELECT COUNT(*) as total FROM admin_reports'
+      );
+
+      reports = reportData;
+      total = countResult[0]?.total || 0;
+    } catch (tableError) {
+      console.warn('⚠️ Reports table not found, using empty data:', tableError.message);
+      // Table doesn't exist, return empty array
+    }
+
+    res.json({
+      success: true,
+      reports: reports,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get report history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch report history'
+    });
+  }
+});
+
+// POST /api/admin/reports/generate - Generate report
+router.post('/reports/generate', authenticateAdmin, async (req, res) => {
+  try {
+    const { type, startDate, endDate, format = 'json' } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('📊 Admin: Generating report - Type:', type, 'Format:', format);
+
+    if (!type || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Type, startDate, and endDate are required'
+      });
+    }
+
+    // Generate report based on type
+    let reportData = {};
+    let filename = '';
+
+    switch(type) {
+      case 'users':
+        const [usersReport] = await db.execute(`
+          SELECT 
+            u.*,
+            COUNT(DISTINCT m.id) as total_matches,
+            COUNT(DISTINCT tp.tournament_id) as total_tournaments,
+            COUNT(DISTINCT gm.group_id) as total_groups,
+            COALESCE(SUM(CASE WHEN t.type = 'deposit' THEN t.amount ELSE 0 END), 0) as total_deposits,
+            COALESCE(SUM(CASE WHEN t.type = 'withdrawal' THEN t.amount ELSE 0 END), 0) as total_withdrawals
+          FROM users u
+          LEFT JOIN matches m ON (m.player1_id = u.id OR m.player2_id = u.id) AND m.created_at BETWEEN ? AND ?
+          LEFT JOIN tournament_participants tp ON tp.user_id = u.id AND tp.joined_at BETWEEN ? AND ?
+          LEFT JOIN group_members gm ON gm.user_id = u.id AND gm.joined_at BETWEEN ? AND ?
+          LEFT JOIN transactions t ON t.user_id = u.id AND t.created_at BETWEEN ? AND ?
+          WHERE u.created_at BETWEEN ? AND ?
+          GROUP BY u.id
+          ORDER BY u.created_at DESC
+        `, [startDate, endDate, startDate, endDate, startDate, endDate, startDate, endDate, startDate, endDate]);
+        
+        reportData = usersReport;
+        filename = `users_report_${startDate}_to_${endDate}`;
+        break;
+
+      case 'transactions':
+        const [transactionsReport] = await db.execute(`
+          SELECT 
+            t.*,
+            u.username,
+            u.email,
+            u.wallet_account_number
+          FROM transactions t
+          JOIN users u ON t.user_id = u.id
+          WHERE t.created_at BETWEEN ? AND ?
+          ORDER BY t.created_at DESC
+        `, [startDate, endDate]);
+        
+        reportData = transactionsReport;
+        filename = `transactions_report_${startDate}_to_${endDate}`;
+        break;
+
+      case 'tournaments':
+        const [tournamentsReport] = await db.execute(`
+          SELECT 
+            t.*,
+            u.username as creator_username,
+            COUNT(DISTINCT tp.id) as participants_count,
+            COUNT(DISTINCT tm.id) as matches_count
+          FROM tournaments t
+          LEFT JOIN users u ON t.creator_id = u.id
+          LEFT JOIN tournament_participants tp ON t.id = tp.tournament_id
+          LEFT JOIN tournament_matches tm ON t.id = tm.tournament_id
+          WHERE t.created_at BETWEEN ? AND ?
+          GROUP BY t.id
+          ORDER BY t.created_at DESC
+        `, [startDate, endDate]);
+        
+        reportData = tournamentsReport;
+        filename = `tournaments_report_${startDate}_to_${endDate}`;
+        break;
+
+      case 'groups':
+        const [groupsReport] = await db.execute(`
+          SELECT 
+            g.*,
+            u.username as creator_username,
+            COUNT(DISTINCT gm.user_id) as members_count
+          FROM groups g
+          LEFT JOIN users u ON g.creator_id = u.id
+          LEFT JOIN group_members gm ON g.id = gm.group_id
+          WHERE g.created_at BETWEEN ? AND ?
+          GROUP BY g.id
+          ORDER BY g.created_at DESC
+        `, [startDate, endDate]);
+        
+        reportData = groupsReport;
+        filename = `groups_report_${startDate}_to_${endDate}`;
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid report type. Available: users, transactions, tournaments, groups'
+        });
+    }
+
+    // Save report to database (if table exists)
+    const reportId = `report_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    try {
+      await db.execute(
+        `INSERT INTO admin_reports 
+         (id, admin_id, report_type, start_date, end_date, format, filename, record_count) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [reportId, adminId, type, startDate, endDate, format, filename, reportData.length]
+      );
+    } catch (saveError) {
+      console.warn('⚠️ Could not save report to database:', saveError.message);
+    }
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description) 
+       VALUES (?, 'report_generate', ?)`,
+      [adminId, `Generated ${type} report from ${startDate} to ${endDate}`]
+    );
+
+    // Return report data
+    if (format === 'csv') {
+      // Convert to CSV (simplified)
+      const csv = convertToCSV(reportData);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({
+      success: true,
+      report: {
+        id: reportId,
+        type,
+        startDate,
+        endDate,
+        format,
+        filename,
+        record_count: reportData.length,
+        data: reportData
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Generate report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate report',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Helper function to convert data to CSV
+function convertToCSV(data) {
+  if (!data || data.length === 0) return '';
+  
+  const headers = Object.keys(data[0]);
+  const csvRows = [];
+  
+  // Add headers
+  csvRows.push(headers.join(','));
+  
+  // Add data rows
+  for (const row of data) {
+    const values = headers.map(header => {
+      const value = row[header];
+      // Escape commas and quotes
+      if (value === null || value === undefined) return '';
+      const escaped = String(value).replace(/"/g, '""');
+      return `"${escaped}"`;
+    });
+    csvRows.push(values.join(','));
+  }
+  
+  return csvRows.join('\n');
+}
+
+// GET /api/admin/reports/:id - Get report by ID
+router.get('/reports/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log('📋 Admin: Fetching report:', id);
+
+    // Check if reports table exists
+    let report = null;
+    
+    try {
+      const [reports] = await db.execute(
+        'SELECT * FROM admin_reports WHERE id = ?',
+        [id]
+      );
+      
+      if (reports.length > 0) {
+        report = reports[0];
+      }
+    } catch (tableError) {
+      console.warn('⚠️ Reports table not found:', tableError.message);
+    }
+
+    if (!report) {
+      return res.status(404).json({
+        success: false,
+        message: 'Report not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      report
+    });
+
+  } catch (error) {
+    console.error('❌ Get report error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch report'
+    });
+  }
+});
+
+// GET /api/admin/reports/types - Get available report types
+router.get('/reports/types', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📋 Admin: Fetching report types');
+    
+    const reportTypes = [
+      {
+        id: 'users',
+        name: 'Users Report',
+        description: 'Detailed user information and activity',
+        fields: ['id', 'username', 'email', 'created_at', 'total_matches', 'total_tournaments', 'total_deposits']
+      },
+      {
+        id: 'transactions',
+        name: 'Transactions Report',
+        description: 'All financial transactions',
+        fields: ['id', 'user_id', 'type', 'amount', 'status', 'created_at', 'reference']
+      },
+      {
+        id: 'tournaments',
+        name: 'Tournaments Report',
+        description: 'Tournament information and participation',
+        fields: ['id', 'name', 'game', 'status', 'creator_id', 'participants_count', 'prize_pool', 'created_at']
+      },
+      {
+        id: 'groups',
+        name: 'Groups Report',
+        description: 'Group information and membership',
+        fields: ['id', 'name', 'visibility', 'creator_id', 'members_count', 'game_specialty', 'created_at']
+      }
+    ];
+
+    res.json({
+      success: true,
+      report_types: reportTypes
+    });
+
+  } catch (error) {
+    console.error('❌ Get report types error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch report types'
+    });
+  }
+});
+// ==================== ADMIN MANAGEMENT ENDPOINTS ====================
+
+// GET /api/admin/admins - Get all admin users
+router.get('/admins', authenticateAdmin, async (req, res) => {
+  try {
+    const adminId = req.admin.id;
+    console.log('👑 Admin: Fetching all admins - Requested by:', adminId);
+
+    const [admins] = await db.execute(`
+      SELECT 
+        id,
+        username,
+        email,
+        role,
+        is_active,
+        last_login,
+        created_at,
+        updated_at,
+        permissions
+      FROM admin_users 
+      ORDER BY 
+        CASE role 
+          WHEN 'super_admin' THEN 1
+          WHEN 'admin' THEN 2
+          ELSE 3 
+        END,
+        created_at DESC
+    `);
+
+    // Parse permissions if they exist
+    const formattedAdmins = admins.map(admin => ({
+      ...admin,
+      permissions: admin.permissions ? JSON.parse(admin.permissions) : []
+    }));
+
+    res.json({
+      success: true,
+      admins: formattedAdmins,
+      count: admins.length
+    });
+
+  } catch (error) {
+    console.error('❌ Get admins error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch admin users'
+    });
+  }
+});
+
+// GET /api/admin/logs - Get admin activity logs
+router.get('/logs', authenticateAdmin, async (req, res) => {
+  try {
+    const { adminId = '', page = 1, limit = 50, action_type = '' } = req.query;
+    const offset = (page - 1) * limit;
+    const requestingAdminId = req.admin.id;
+
+    console.log('📝 Admin: Fetching admin logs - Page:', page, 'AdminId:', adminId);
+
+    let query = `
+      SELECT 
+        al.*,
+        au.username as admin_username,
+        u.username as affected_user_username
+      FROM admin_activity_logs al
+      LEFT JOIN admin_users au ON al.admin_id = au.id
+      LEFT JOIN users u ON al.affected_user_id = u.id
+      WHERE 1=1
+    `;
+    
+    let countQuery = 'SELECT COUNT(*) as total FROM admin_activity_logs al WHERE 1=1';
+    const params = [];
+    const countParams = [];
+
+    if (adminId && adminId !== '') {
+      query += ' AND al.admin_id = ?';
+      countQuery += ' AND al.admin_id = ?';
+      params.push(adminId);
+      countParams.push(adminId);
+    }
+
+    if (action_type && action_type !== '') {
+      query += ' AND al.action_type = ?';
+      countQuery += ' AND al.action_type = ?';
+      params.push(action_type);
+      countParams.push(action_type);
+    }
+
+    // Order and paginate
+    query += ' ORDER BY al.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    // Execute queries
+    const [logs] = await db.execute(query, params);
+    const [countResult] = await db.execute(countQuery, countParams);
+
+    // Parse details if they exist
+    const formattedLogs = logs.map(log => ({
+      ...log,
+      details: log.details ? JSON.parse(log.details) : null
+    }));
+
+    res.json({
+      success: true,
+      logs: formattedLogs,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0]?.total || 0,
+        totalPages: Math.ceil((countResult[0]?.total || 0) / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get admin logs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch admin logs'
+    });
+  }
+});
+
+// POST /api/admin/admins - Create new admin
+router.post('/admins', authenticateAdmin, async (req, res) => {
+  try {
+    const { username, email, password, role = 'admin', permissions = [] } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('👑 Admin: Creating new admin - Requested by:', adminId, 'Username:', username);
+
+    if (!username || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username, email, and password are required'
+      });
+    }
+
+    // Check if username already exists
+    const [existingUsername] = await db.execute(
+      'SELECT id FROM admin_users WHERE username = ?',
+      [username]
+    );
+
+    if (existingUsername.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username already exists'
+      });
+    }
+
+    // Check if email already exists
+    const [existingEmail] = await db.execute(
+      'SELECT id FROM admin_users WHERE email = ?',
+      [email]
+    );
+
+    if (existingEmail.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email already exists'
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create admin
+    await db.execute(
+      `INSERT INTO admin_users 
+       (username, email, password_hash, role, permissions, is_active) 
+       VALUES (?, ?, ?, ?, ?, TRUE)`,
+      [username, email, hashedPassword, role, JSON.stringify(permissions)]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, details) 
+       VALUES (?, 'admin_create', ?, ?)`,
+      [
+        adminId,
+        `Created new admin user: ${username}`,
+        JSON.stringify({
+          created_username: username,
+          created_email: email,
+          role: role,
+          permissions: permissions
+        })
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Admin user created successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Create admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create admin user'
+    });
+  }
+});
+
+// PUT /api/admin/admins/:id - Update admin
+router.put('/admins/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { username, email, role, permissions, is_active } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('👑 Admin: Updating admin:', id, 'Requested by:', adminId);
+
+    // Check if admin exists
+    const [admins] = await db.execute(
+      'SELECT id, username FROM admin_users WHERE id = ?',
+      [id]
+    );
+
+    if (admins.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Admin not found'
+      });
+    }
+
+    const admin = admins[0];
+
+    // Build update query
+    const updateFields = [];
+    const updateValues = [];
+
+    if (username !== undefined) {
+      // Check if new username already exists (excluding current admin)
+      const [existingUsername] = await db.execute(
+        'SELECT id FROM admin_users WHERE username = ? AND id != ?',
+        [username, id]
+      );
+
+      if (existingUsername.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Username already exists'
+        });
+      }
+      updateFields.push('username = ?');
+      updateValues.push(username);
+    }
+
+    if (email !== undefined) {
+      // Check if new email already exists (excluding current admin)
+      const [existingEmail] = await db.execute(
+        'SELECT id FROM admin_users WHERE email = ? AND id != ?',
+        [email, id]
+      );
+
+      if (existingEmail.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already exists'
+        });
+      }
+      updateFields.push('email = ?');
+      updateValues.push(email);
+    }
+
+    if (role !== undefined) {
+      updateFields.push('role = ?');
+      updateValues.push(role);
+    }
+
+    if (permissions !== undefined) {
+      updateFields.push('permissions = ?');
+      updateValues.push(JSON.stringify(permissions));
+    }
+
+    if (is_active !== undefined) {
+      updateFields.push('is_active = ?');
+      updateValues.push(is_active ? 1 : 0);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(id);
+
+    const updateQuery = `
+      UPDATE admin_users 
+      SET ${updateFields.join(', ')} 
+      WHERE id = ?
+    `;
+
+    await db.execute(updateQuery, updateValues);
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id, details) 
+       VALUES (?, 'admin_update', ?, ?, ?)`,
+      [
+        adminId,
+        `Updated admin user: ${admin.username}`,
+        id,
+        JSON.stringify({
+          updated_fields: updateFields.filter(f => !f.includes('updated_at')),
+          new_values: req.body
+        })
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Admin updated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Update admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update admin'
+    });
+  }
+});
+
+// PUT /api/admin/admins/:id/password - Update admin password
+router.put('/admins/:id/password', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('👑 Admin: Updating password for admin:', id, 'Requested by:', adminId);
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 6 characters'
+      });
+    }
+
+    // Check if admin exists
+    const [admins] = await db.execute(
+      'SELECT id, username FROM admin_users WHERE id = ?',
+      [id]
+    );
+
+    if (admins.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Admin not found'
+      });
+    }
+
+    const admin = admins[0];
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await db.execute(
+      'UPDATE admin_users SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+      [hashedPassword, id]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id) 
+       VALUES (?, 'admin_password_reset', ?, ?)`,
+      [adminId, `Reset password for admin: ${admin.username}`, id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Password updated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Update admin password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update password'
+    });
+  }
+});
+
+// DELETE /api/admin/admins/:id - Delete admin
+router.delete('/admins/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.admin.id;
+
+    console.log('👑 Admin: Deleting admin:', id, 'Requested by:', adminId);
+
+    // Cannot delete yourself
+    if (parseInt(id) === parseInt(adminId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete your own account'
+      });
+    }
+
+    // Check if admin exists
+    const [admins] = await db.execute(
+      'SELECT id, username, role FROM admin_users WHERE id = ?',
+      [id]
+    );
+
+    if (admins.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Admin not found'
+      });
+    }
+
+    const admin = admins[0];
+
+    // Cannot delete super_admin unless you are super_admin
+    const [requester] = await db.execute(
+      'SELECT role FROM admin_users WHERE id = ?',
+      [adminId]
+    );
+
+    if (admin.role === 'super_admin' && requester[0].role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only super admin can delete other super admins'
+      });
+    }
+
+    // Soft delete (deactivate) instead of hard delete
+    await db.execute(
+      'UPDATE admin_users SET is_active = 0, updated_at = NOW() WHERE id = ?',
+      [id]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id, details) 
+       VALUES (?, 'admin_delete', ?, ?, ?)`,
+      [
+        adminId,
+        `Deleted admin user: ${admin.username}`,
+        id,
+        JSON.stringify({
+          admin_username: admin.username,
+          admin_role: admin.role
+        })
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Admin deactivated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete admin'
+    });
+  }
+});
+
+// GET /api/admin/activity-types - Get available activity types
+router.get('/activity-types', authenticateAdmin, async (req, res) => {
+  try {
+    console.log('📝 Admin: Fetching activity types');
+
+    const [activityTypes] = await db.execute(`
+      SELECT DISTINCT action_type 
+      FROM admin_activity_logs 
+      ORDER BY action_type
+    `);
+
+    const types = activityTypes.map(type => type.action_type);
+
+    res.json({
+      success: true,
+      activity_types: types
+    });
+
+  } catch (error) {
+    console.error('❌ Get activity types error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch activity types'
+    });
+  }
+});
+
+// POST /api/admin/admins/:id/toggle-active - Toggle admin active status
+router.post('/admins/:id/toggle-active', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_active } = req.body;
+    const adminId = req.admin.id;
+
+    console.log('👑 Admin: Toggling active status for admin:', id, 'Status:', is_active);
+
+    // Cannot toggle your own status
+    if (parseInt(id) === parseInt(adminId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot change your own active status'
+      });
+    }
+
+    // Check if admin exists
+    const [admins] = await db.execute(
+      'SELECT id, username FROM admin_users WHERE id = ?',
+      [id]
+    );
+
+    if (admins.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Admin not found'
+      });
+    }
+
+    const admin = admins[0];
+
+    // Update active status
+    await db.execute(
+      'UPDATE admin_users SET is_active = ?, updated_at = NOW() WHERE id = ?',
+      [is_active ? 1 : 0, id]
+    );
+
+    // Log activity
+    await db.execute(
+      `INSERT INTO admin_activity_logs 
+       (admin_id, action_type, description, affected_user_id, details) 
+       VALUES (?, 'admin_status_change', ?, ?, ?)`,
+      [
+        adminId,
+        `${is_active ? 'Activated' : 'Deactivated'} admin: ${admin.username}`,
+        id,
+        JSON.stringify({
+          new_status: is_active ? 'active' : 'inactive',
+          admin_username: admin.username
+        })
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: `Admin ${is_active ? 'activated' : 'deactivated'} successfully`
+    });
+
+  } catch (error) {
+    console.error('❌ Toggle admin active error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update admin status'
     });
   }
 });
